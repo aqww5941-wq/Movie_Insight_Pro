@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>电影数据看板</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .movie-card {
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        .movie-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+        }
+        .rating-badge {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .pagination-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        /* 封面图片样式 */
+        .movie-cover {
+            width: 100%;
+            height: 300px;
+            object-fit: cover;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .movie-cover-placeholder {
+            width: 100%;
+            height: 300px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 4rem;
+        }
+        /* 详情弹窗动画 */
+        .modal {
+            display: none;
+            animation: fadeIn 0.3s;
+        }
+        .modal.active {
+            display: flex;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        .modal-content {
+            animation: slideUp 0.3s;
+        }
+        @keyframes slideUp {
+            from { transform: translateY(50px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        /* 图片加载失败样式 */
+        .img-error {
+            display: none;
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- 页面标题 -->
+        <h1 class="text-4xl font-bold text-center mb-2 text-indigo-600">🎬 我的电影数据中心</h1>
+        <p class="text-center text-gray-600 mb-8">点击电影卡片查看详情 · 搜索你喜欢的电影</p>
+
+        <!-- 搜索栏 -->
+        <div class="max-w-2xl mx-auto mb-8">
+            <div class="bg-white rounded-xl shadow-lg p-4">
+                <div class="flex gap-2 mb-4">
+                    <input 
+                        id="searchInput" 
+                        type="text" 
+                        placeholder="搜索电影标题、导演或演员..." 
+                        class="flex-1 px-4 py-3 rounded-lg border-2 border-indigo-200 focus:border-indigo-500 focus:outline-none transition"
+                        onkeypress="if(event.key==='Enter') searchMovies()"
+                    >
+                    <button 
+                        onclick="searchMovies()" 
+                        class="bg-indigo-500 text-white px-8 py-3 rounded-lg hover:bg-indigo-600 font-semibold transition"
+                    >
+                        🔍 搜索
+                    </button>
+                    <button 
+                        onclick="resetSearch()" 
+                        class="bg-gray-200 text-gray-700 px-6 py-3 rounded-lg hover:bg-gray-300 font-semibold transition"
+                    >
+                        🔄 重置
+                    </button>
+                </div>
+
+                <!-- 高级筛选 -->
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <select id="sourceFilter" class="px-3 py-2 rounded-lg border border-gray-300 focus:border-indigo-500 focus:outline-none">
+                        <option value="">全部来源</option>
+                        <option value="imdb">IMDB</option>
+                        <option value="douban">豆瓣</option>
+                    </select>
+                    
+                    <input 
+                        id="yearFilter" 
+                        type="text" 
+                        placeholder="年份 (如: 2008)" 
+                        class="px-3 py-2 rounded-lg border border-gray-300 focus:border-indigo-500 focus:outline-none"
+                    >
+                    
+                    <input 
+                        id="minRatingFilter" 
+                        type="number" 
+                        step="0.1" 
+                        min="0" 
+                        max="10" 
+                        placeholder="最低评分" 
+                        class="px-3 py-2 rounded-lg border border-gray-300 focus:border-indigo-500 focus:outline-none"
+                    >
+                    
+                    <select id="sortBy" class="px-3 py-2 rounded-lg border border-gray-300 focus:border-indigo-500 focus:outline-none">
+                        <option value="rating">按评分排序</option>
+                        <option value="rating_count">按热度排序</option>
+                        <option value="year">按年份排序</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- 结果统计 -->
+        <div id="resultInfo" class="text-center mb-6 text-gray-700 font-medium"></div>
+
+        <!-- 电影列表 -->
+        <div id="movieList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-6 mb-8">
+            <!-- 电影卡片将动态插入这里 -->
+        </div>
+
+        <!-- 分页控件 -->
+        <div id="pagination" class="flex justify-center items-center gap-4 mb-8">
+            <!-- 分页按钮将动态插入这里 -->
+        </div>
+
+        <!-- 加载状态 -->
+        <div id="loading" class="hidden text-center py-12">
+            <div class="inline-block animate-spin rounded-full h-12 w-12 border-4 border-indigo-500 border-t-transparent"></div>
+            <p class="mt-4 text-gray-600">加载中...</p>
+        </div>
+
+        <!-- 空状态 -->
+        <div id="emptyState" class="hidden text-center py-12">
+            <div class="text-6xl mb-4">🎬</div>
+            <h3 class="text-xl font-semibold text-gray-700 mb-2">未找到相关电影</h3>
+            <p class="text-gray-500">试试调整搜索条件或使用不同的关键词</p>
+        </div>
+    </div>
+
+    <!-- 电影详情弹窗 -->
+    <div id="movieModal" class="modal fixed inset-0 bg-black bg-opacity-60 z-50 items-center justify-center p-4">
+        <div class="modal-content bg-white rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+            <div class="sticky top-0 bg-white border-b px-6 py-4 flex justify-between items-center z-10">
+                <h2 class="text-2xl font-bold text-gray-800">电影详情</h2>
+                <button onclick="closeModal()" class="text-gray-500 hover:text-gray-700 text-3xl leading-none">&times;</button>
+            </div>
+            <div id="modalBody" class="p-6">
+                <!-- 详情内容将动态插入这里 -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 配置 API 地址
+        const API_BASE_URL = 'http://localhost:8000';
+        
+        let currentPage = 1;
+        let totalPages = 1;
+
+        // 页面加载时自动获取电影
+        window.onload = () => {
+            fetchMovies();
+        };
+
+        // 获取电影列表
+        async function fetchMovies(page = 1) {
+            showLoading(true);
+            
+            // 构建查询参数
+            const params = new URLSearchParams({
+                page: page,
+                limit: 20,
+                order: 'desc'
+            });
+
+            const keyword = document.getElementById('searchInput').value.trim();
+            if (keyword) params.append('q', keyword);
+
+            const source = document.getElementById('sourceFilter').value;
+            if (source) params.append('source', source);
+
+            const year = document.getElementById('yearFilter').value.trim();
+            if (year) params.append('year', year);
+
+            const minRating = document.getElementById('minRatingFilter').value;
+            if (minRating) params.append('min_rating', minRating);
+
+            const sortBy = document.getElementById('sortBy').value;
+            if (sortBy) params.append('sort_by', sortBy);
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/movies?${params}`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    currentPage = data.page;
+                    totalPages = data.total_pages;
+                    renderMovies(data.items, data.total);
+                    renderPagination(data);
+                } else {
+                    showError(data.detail || '查询失败');
+                }
+            } catch (error) {
+                showError(`网络错误: ${error.message}`);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // 搜索电影
+        function searchMovies() {
+            currentPage = 1;
+            fetchMovies(1);
+        }
+
+        // 重置搜索
+        function resetSearch() {
+            document.getElementById('searchInput').value = '';
+            document.getElementById('sourceFilter').value = '';
+            document.getElementById('yearFilter').value = '';
+            document.getElementById('minRatingFilter').value = '';
+            document.getElementById('sortBy').value = 'rating';
+            currentPage = 1;
+            fetchMovies(1);
+        }
+
+        // 图片加载错误处理
+        function handleImageError(img) {
+            img.style.display = 'none';
+            img.nextElementSibling.style.display = 'flex';
+        }
+
+        // 渲染电影列表
+        function renderMovies(movies, total) {
+            const list = document.getElementById('movieList');
+            const emptyState = document.getElementById('emptyState');
+            const resultInfo = document.getElementById('resultInfo');
+            
+            if (!movies || movies.length === 0) {
+                list.innerHTML = '';
+                list.classList.add('hidden');
+                emptyState.classList.remove('hidden');
+                resultInfo.innerHTML = '';
+                return;
+            }
+
+            list.classList.remove('hidden');
+            emptyState.classList.add('hidden');
+            resultInfo.innerHTML = `找到 <strong class="text-indigo-600">${total}</strong> 部电影`;
+
+            list.innerHTML = movies.map(movie => `
+                <div class="movie-card bg-white rounded-xl shadow-lg overflow-hidden" onclick="showMovieDetail(${movie.id})">
+                    <!-- 封面图片 -->
+                    ${movie.cover_url ? `
+                    <div class="relative">
+                        <img 
+                            src="${movie.cover_url}" 
+                            alt="${movie.title}"
+                            class="movie-cover"
+                            onerror="handleImageError(this)"
+                        >
+                        <div class="movie-cover-placeholder img-error">
+                            🎬
+                        </div>
+                        <!-- 评分角标 -->
+                        <div class="absolute top-2 right-2">
+                            <span class="rating-badge text-white px-3 py-1 rounded-full font-bold text-sm shadow-lg">
+                                ⭐ ${movie.rating || 'N/A'}
+                            </span>
+                        </div>
+                        <!-- 来源角标 -->
+                        <div class="absolute top-2 left-2">
+                            <span class="text-xs font-bold px-3 py-1 bg-white bg-opacity-90 text-indigo-700 rounded-full backdrop-blur">
+                                ${movie.source ? movie.source.toUpperCase() : 'N/A'}
+                            </span>
+                        </div>
+                    </div>
+                    ` : `
+                    <!-- 无封面时显示渐变背景 -->
+                    <div class="relative">
+                        <div class="movie-cover-placeholder">
+                            🎬
+                        </div>
+                        <!-- 评分角标 -->
+                        <div class="absolute top-2 right-2">
+                            <span class="rating-badge text-white px-3 py-1 rounded-full font-bold text-sm shadow-lg">
+                                ⭐ ${movie.rating || 'N/A'}
+                            </span>
+                        </div>
+                        <!-- 来源角标 -->
+                        <div class="absolute top-2 left-2">
+                            <span class="text-xs font-bold px-3 py-1 bg-white bg-opacity-90 text-indigo-700 rounded-full backdrop-blur">
+                                ${movie.source ? movie.source.toUpperCase() : 'N/A'}
+                            </span>
+                        </div>
+                    </div>
+                    `}
+                    
+                    <!-- 电影信息 -->
+                    <div class="p-4">
+                        <h3 class="text-lg font-bold text-gray-800 mb-2 line-clamp-2 min-h-[3.5rem]">
+                            ${movie.title}
+                        </h3>
+                        <div class="space-y-2 text-sm">
+                            <p class="text-gray-600">
+                                📅 <span class="font-medium">${movie.year || '未知年份'}</span>
+                            </p>
+                            ${movie.rating_count ? `
+                            <p class="text-gray-600">
+                                🔥 <span class="font-medium">${movie.rating_count.toLocaleString()} 人评分</span>
+                            </p>
+                            ` : ''}
+                            ${movie.director ? `
+                            <p class="text-gray-600 line-clamp-1">
+                                🎬 <span class="font-medium">${movie.director}</span>
+                            </p>
+                            ` : ''}
+                        </div>
+                    </div>
+                    
+                    <!-- 底部按钮 -->
+                    <div class="px-4 pb-4">
+                        <button 
+                            onclick="event.stopPropagation(); window.open('${movie.url || '#'}', '_blank')"
+                            class="w-full bg-indigo-500 hover:bg-indigo-600 text-white py-2 rounded-lg font-medium transition ${!movie.url ? 'opacity-50 cursor-not-allowed' : ''}"
+                            ${!movie.url ? 'disabled' : ''}
+                        >
+                            ${movie.url ? '🔗 访问源网站' : '暂无链接'}
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // 渲染分页
+        function renderPagination(data) {
+            const pagination = document.getElementById('pagination');
+            
+            if (data.total_pages <= 1) {
+                pagination.innerHTML = '';
+                return;
+            }
+
+            pagination.innerHTML = `
+                <button 
+                    onclick="fetchMovies(${data.page - 1})" 
+                    class="pagination-btn px-6 py-3 bg-white rounded-lg shadow hover:shadow-md transition font-medium ${!data.has_prev ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-50'}"
+                    ${!data.has_prev ? 'disabled' : ''}
+                >
+                    ⬅️ 上一页
+                </button>
+                
+                <div class="px-6 py-3 bg-white rounded-lg shadow font-medium">
+                    第 <span class="text-indigo-600 font-bold">${data.page}</span> / 
+                    <span class="text-gray-600">${data.total_pages}</span> 页
+                </div>
+                
+                <button 
+                    onclick="fetchMovies(${data.page + 1})" 
+                    class="pagination-btn px-6 py-3 bg-indigo-500 text-white rounded-lg shadow hover:shadow-md transition font-medium ${!data.has_next ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-600'}"
+                    ${!data.has_next ? 'disabled' : ''}
+                >
+                    下一页 ➡️
+                </button>
+            `;
+        }
+
+        // 显示电影详情
+        async function showMovieDetail(movieId) {
+            const modal = document.getElementById('movieModal');
+            const modalBody = document.getElementById('modalBody');
+            
+            modalBody.innerHTML = '<div class="text-center py-8"><div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-indigo-500 border-t-transparent"></div></div>';
+            modal.classList.add('active');
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/movies/${movieId}`);
+                const movie = await response.json();
+
+                if (response.ok) {
+                    modalBody.innerHTML = `
+                        <div class="space-y-6">
+                            <!-- 封面图片（详情页） -->
+                            ${movie.cover_url ? `
+                            <div class="w-full flex justify-center">
+                                <img 
+                                    src="${movie.cover_url}" 
+                                    alt="${movie.title}"
+                                    class="rounded-xl shadow-lg max-h-96 object-cover"
+                                    onerror="this.style.display='none'"
+                                >
+                            </div>
+                            ` : ''}
+                            
+                            <!-- 标题和评分 -->
+                            <div>
+                                <h3 class="text-3xl font-bold text-gray-800 mb-3">${movie.title}</h3>
+                                <div class="flex flex-wrap gap-3">
+                                    ${movie.rating ? `<span class="rating-badge text-white px-4 py-2 rounded-full font-bold text-lg">⭐ ${movie.rating}</span>` : ''}
+                                    ${movie.year ? `<span class="bg-gray-200 text-gray-700 px-4 py-2 rounded-full font-medium">📅 ${movie.year}</span>` : ''}
+                                    ${movie.source ? `<span class="bg-indigo-100 text-indigo-700 px-4 py-2 rounded-full font-medium">📱 ${movie.source.toUpperCase()}</span>` : ''}
+                                </div>
+                                ${movie.rating_count ? `<p class="mt-2 text-gray-600">🔥 <strong>${movie.rating_count.toLocaleString()}</strong> 人评分</p>` : ''}
+                            </div>
+
+                            <!-- 导演和演员 -->
+                            ${movie.director ? `
+                            <div class="bg-gray-50 p-4 rounded-lg">
+                                <h4 class="font-bold text-gray-700 mb-2">🎬 导演</h4>
+                                <p class="text-gray-600">${movie.director}</p>
+                            </div>
+                            ` : ''}
+
+                            ${movie.stars ? `
+                            <div class="bg-gray-50 p-4 rounded-lg">
+                                <h4 class="font-bold text-gray-700 mb-2">🌟 主演</h4>
+                                <p class="text-gray-600">${movie.stars}</p>
+                            </div>
+                            ` : ''}
+
+                            <!-- 剧情简介 -->
+                            ${movie.summary ? `
+                            <div class="bg-gray-50 p-4 rounded-lg">
+                                <h4 class="font-bold text-gray-700 mb-2">📝 剧情简介</h4>
+                                <p class="text-gray-600 leading-relaxed">${movie.summary}</p>
+                            </div>
+                            ` : ''}
+
+                            <!-- 访问链接 -->
+                            ${movie.url ? `
+                            <div class="flex gap-3">
+                                <a 
+                                    href="${movie.url}" 
+                                    target="_blank"
+                                    class="flex-1 bg-indigo-500 hover:bg-indigo-600 text-white text-center py-3 rounded-lg font-semibold transition"
+                                >
+                                    🔗 访问 ${movie.source ? movie.source.toUpperCase() : ''} 查看更多
+                                </a>
+                            </div>
+                            ` : ''}
+
+                            <!-- 元数据 -->
+                            ${movie.created_at ? `
+                            <div class="text-center text-sm text-gray-500 pt-4 border-t">
+                                数据创建时间: ${new Date(movie.created_at).toLocaleString('zh-CN')}
+                            </div>
+                            ` : ''}
+                        </div>
+                    `;
+                } else {
+                    modalBody.innerHTML = `<div class="text-center py-8 text-red-600">❌ ${movie.detail || '加载失败'}</div>`;
+                }
+            } catch (error) {
+                modalBody.innerHTML = `<div class="text-center py-8 text-red-600">❌ 网络错误: ${error.message}</div>`;
+            }
+        }
+
+        // 关闭弹窗
+        function closeModal() {
+            document.getElementById('movieModal').classList.remove('active');
+        }
+
+        // 点击弹窗外部关闭
+        document.getElementById('movieModal').addEventListener('click', function(event) {
+            if (event.target === this) {
+                closeModal();
+            }
+        });
+
+        // ESC 键关闭弹窗
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closeModal();
+            }
+        });
+
+        // 显示/隐藏加载状态
+        function showLoading(show) {
+            const loading = document.getElementById('loading');
+            const movieList = document.getElementById('movieList');
+            const pagination = document.getElementById('pagination');
+            
+            if (show) {
+                loading.classList.remove('hidden');
+                movieList.classList.add('hidden');
+                pagination.innerHTML = '';
+            } else {
+                loading.classList.add('hidden');
+            }
+        }
+
+        // 显示错误
+        function showError(message) {
+            const resultInfo = document.getElementById('resultInfo');
+            resultInfo.innerHTML = `<span class="text-red-600">❌ ${message}</span>`;
+            document.getElementById('movieList').innerHTML = '';
+            document.getElementById('emptyState').classList.remove('hidden');
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+services: # 这一行必须顶格，且后面不能有奇怪的字符
+  # 数据库服务
+  db:
+    image: mysql:8.0
+    container_name: movie-mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DBNAME}
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./mysql_data:/var/lib/mysql
+      - ./data/init_sql:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 爬虫采集服务
+  collector:
+    build:
+      context: ./services/collector
+    network_mode: "host"
+    container_name: scrapy_collector
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./services/collector:/app
+      - ./data:/app/data
+    tty: true
+    stdin_open: true
+  backend:
+    build: ./services/backend
+    container_name: movie-api
+    ports:
+      - "8000:8000"
+    environment:
+      - MYSQL_HOST=db
+      - MYSQL_ROOT_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DBNAME}
+    volumes:
+      - ./services/backend:/app
+    depends_on:
+      db:
+        condition: service_healthy # 等数据库完全启动后再启动 API

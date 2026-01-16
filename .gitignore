@@ -1,0 +1,15 @@
+# 数据库原始文件 (对应你 tree 里的 mysql_data)
+mysql_data/
+
+# 敏感配置文件
+.env
+
+# Python 编译缓存 (对应你各处的 __pycache__)
+**/__pycache__/
+*.py[cod]
+
+# Scrapy 运行时产生的临时数据
+services/collector/.scrapy/
+
+# 系统文件
+.DS_Store

@@ -1,0 +1,16 @@
+# 基础爬虫框架
+Scrapy==2.11.1
+# 浏览器自动化渲染（必选，用于应对 IMDB/豆瓣 的动态加载）
+scrapy-playwright==0.0.44
+playwright==1.57.0
+
+# 数据库连接
+PyMySQL==1.1.2
+# Scrapy 异步入库必须依赖这个库
+Twisted==25.5.0
+cryptography==44.0.3
+
+# 工具类
+beautifulsoup4==4.14.3
+lxml==6.0.2
+python-dateutil==2.9.0.post0
