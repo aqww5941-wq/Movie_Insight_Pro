@@ -5,6 +5,8 @@ from email.mime.text import MIMEText
 from email.header import Header
 import re
 import os
+import dashscope
+from http import HTTPStatus
 
 load_dotenv()
 
@@ -89,3 +91,25 @@ class DataCleaner:
         except Exception as e:
             print(f"邮件发送失败: {e}")
             return False
+
+class AIAgent:
+    @staticmethod
+    def analyze_movie_plot(plot_text):
+        """
+        调用 Qwen API 对电影剧情进行分析
+        """
+        api_key = os.getenv('DASHSCOPE_API_KEY')
+        if not api_key:
+            return "未配置 API KEY"
+
+        # 调用通义千问模型 (以 qwen-plus 为例)
+        response = dashscope.Generation.call(
+            model='qwen-plus',
+            prompt=f"请简要总结以下电影剧情的三个核心标签，用逗号隔开：{plot_text}",
+            api_key=api_key
+        )
+
+        if response.status_code == HTTPStatus.OK:
+            return response.output.text
+        else:
+            return f"Error: {response.message}"

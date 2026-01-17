@@ -34,6 +34,7 @@ services: # 这一行必须顶格，且后面不能有奇怪的字符
       - ./data:/app/data
     tty: true
     stdin_open: true
+
   backend:
     build: ./services/backend
     container_name: movie-api
@@ -43,6 +44,7 @@ services: # 这一行必须顶格，且后面不能有奇怪的字符
       - MYSQL_HOST=db
       - MYSQL_ROOT_PASSWORD=${MYSQL_PASSWORD}
       - MYSQL_DATABASE=${MYSQL_DBNAME}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
     volumes:
       - ./services/backend:/app
     depends_on:

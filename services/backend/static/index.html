@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>电影数据看板</title>
+    <title>电影 AI 助手 - 完整版</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         .movie-card {
@@ -21,7 +21,6 @@
             opacity: 0.5;
             cursor: not-allowed;
         }
-        /* 封面图片样式 */
         .movie-cover {
             width: 100%;
             height: 300px;
@@ -37,7 +36,6 @@
             justify-content: center;
             font-size: 4rem;
         }
-        /* 详情弹窗动画 */
         .modal {
             display: none;
             animation: fadeIn 0.3s;
@@ -56,17 +54,86 @@
             from { transform: translateY(50px); opacity: 0; }
             to { transform: translateY(0); opacity: 1; }
         }
-        /* 图片加载失败样式 */
         .img-error {
             display: none;
+        }
+        
+        /* AI 相关样式 */
+        .ai-response-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 1rem;
+            padding: 2rem;
+            color: white;
+            margin-bottom: 2rem;
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
+            animation: slideIn 0.5s ease-out;
+        }
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .ai-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(10px);
+            padding: 0.5rem 1rem;
+            border-radius: 2rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+        .ai-thinking {
+            display: inline-block;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* 快捷功能按钮 */
+        .quick-action {
+            transition: all 0.3s;
+        }
+        .quick-action:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
         }
     </style>
 </head>
 <body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
     <div class="container mx-auto px-4 py-8">
         <!-- 页面标题 -->
-        <h1 class="text-4xl font-bold text-center mb-2 text-indigo-600">🎬 我的电影数据中心</h1>
-        <p class="text-center text-gray-600 mb-8">点击电影卡片查看详情 · 搜索你喜欢的电影</p>
+        <h1 class="text-4xl font-bold text-center mb-2 text-indigo-600">🎬 AI 电影智能助手</h1>
+        <p class="text-center text-gray-600 mb-8">智能搜索 · AI 推荐 · 自动展示推荐结果</p>
+
+        <!-- 快捷 AI 功能 -->
+        <div class="max-w-4xl mx-auto mb-6">
+            <div class="bg-white rounded-xl shadow-lg p-6">
+                <h3 class="font-bold text-gray-700 mb-4">⚡ 快捷功能</h3>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <button onclick="askAI('推荐评分最高的 5 部电影')" class="quick-action bg-indigo-50 hover:bg-indigo-100 text-indigo-700 p-4 rounded-lg font-medium">
+                        🏆 Top 5 佳片
+                    </button>
+                    <button onclick="askAI('推荐温馨的电影')" class="quick-action bg-purple-50 hover:bg-purple-100 text-purple-700 p-4 rounded-lg font-medium">
+                        💝 温馨电影
+                    </button>
+                    <button onclick="askAI('推荐科幻片')" class="quick-action bg-blue-50 hover:bg-blue-100 text-blue-700 p-4 rounded-lg font-medium">
+                        🚀 科幻推荐
+                    </button>
+                    <button onclick="askAI('推荐悬疑烧脑的电影')" class="quick-action bg-green-50 hover:bg-green-100 text-green-700 p-4 rounded-lg font-medium">
+                        🧠 烧脑悬疑
+                    </button>
+                </div>
+            </div>
+        </div>
 
         <!-- 搜索栏 -->
         <div class="max-w-2xl mx-auto mb-8">
@@ -75,12 +142,12 @@
                     <input 
                         id="searchInput" 
                         type="text" 
-                        placeholder="搜索电影标题、导演或演员..." 
+                        placeholder="搜索电影或向 AI 提问..." 
                         class="flex-1 px-4 py-3 rounded-lg border-2 border-indigo-200 focus:border-indigo-500 focus:outline-none transition"
-                        onkeypress="if(event.key==='Enter') searchMovies()"
+                        onkeypress="if(event.key==='Enter') handleSearch()"
                     >
                     <button 
-                        onclick="searchMovies()" 
+                        onclick="handleSearch()" 
                         class="bg-indigo-500 text-white px-8 py-3 rounded-lg hover:bg-indigo-600 font-semibold transition"
                     >
                         🔍 搜索
@@ -127,6 +194,11 @@
             </div>
         </div>
 
+        <!-- AI 推荐说明区域 -->
+        <div id="aiResponseArea" class="max-w-4xl mx-auto mb-6" style="display: none;">
+            <!-- AI 回复内容将动态插入这里 -->
+        </div>
+
         <!-- 结果统计 -->
         <div id="resultInfo" class="text-center mb-6 text-gray-700 font-medium"></div>
 
@@ -143,7 +215,7 @@
         <!-- 加载状态 -->
         <div id="loading" class="hidden text-center py-12">
             <div class="inline-block animate-spin rounded-full h-12 w-12 border-4 border-indigo-500 border-t-transparent"></div>
-            <p class="mt-4 text-gray-600">加载中...</p>
+            <p class="mt-4 text-gray-600">AI 正在思考并查找电影...</p>
         </div>
 
         <!-- 空状态 -->
@@ -168,22 +240,193 @@
     </div>
 
     <script>
-        // 配置 API 地址
         const API_BASE_URL = 'http://localhost:8000';
         
         let currentPage = 1;
         let totalPages = 1;
 
-        // 页面加载时自动获取电影
         window.onload = () => {
             fetchMovies();
         };
 
-        // 获取电影列表
+        // ========== 智能搜索处理 ==========
+        
+        function handleSearch() {
+            const query = document.getElementById('searchInput').value.trim();
+            
+            if (!query) {
+                fetchMovies(1);
+                return;
+            }
+
+            // 判断是否为对话式查询（包含问号、"推荐"、"对比"等关键词）
+            const isConversational = /\?|推荐|对比|什么|哪些|怎么样|类似|最好|最新|温馨|感人|搞笑|悬疑|科幻|动作/.test(query);
+            
+            if (isConversational) {
+                // 使用 AI 模式
+                askAI(query);
+            } else {
+                // 使用普通搜索
+                currentPage = 1;
+                fetchMovies(1);
+            }
+        }
+
+        // ========== AI 推荐核心功能 ==========
+        
+        async function askAI(question) {
+            showLoading(true);
+            hideAIResponse();
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/agent/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: question })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok && data.status === "success") {
+                    // 显示 AI 的文字推荐说明
+                    displayAIExplanation(data.agent_answer, question);
+                    
+                    // 关键：根据 AI 返回的电影标题/ID 去获取并展示电影卡片
+                    if (data.movie_titles && data.movie_titles.length > 0) {
+                        // 方案1：AI 返回电影标题列表，前端搜索这些电影
+                        await fetchMoviesByTitles(data.movie_titles);
+                    } else if (data.movie_ids && data.movie_ids.length > 0) {
+                        // 方案2：AI 返回电影 ID 列表，前端直接获取
+                        await fetchMoviesByIds(data.movie_ids);
+                    } else {
+                        // 方案3：从 AI 的回复中解析电影名称
+                        const extractedTitles = extractMovieTitlesFromText(data.agent_answer);
+                        if (extractedTitles.length > 0) {
+                            await fetchMoviesByTitles(extractedTitles);
+                        } else {
+                            showNoMoviesFound();
+                        }
+                    }
+                } else {
+                    showError(data.detail || 'AI 推荐失败');
+                }
+            } catch (error) {
+                showError(`AI 服务错误: ${error.message}`);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // 显示 AI 的推荐说明
+        function displayAIExplanation(aiAnswer, userQuery) {
+            const aiArea = document.getElementById('aiResponseArea');
+            aiArea.style.display = 'block';
+            
+            aiArea.innerHTML = `
+                <div class="ai-response-card">
+                    <div class="ai-badge">
+                        <span>🤖</span>
+                        <span>AI 推荐助手</span>
+                    </div>
+                    <div class="text-white text-lg leading-relaxed whitespace-pre-wrap">${aiAnswer}</div>
+                    <div class="mt-4 text-white text-sm opacity-80">
+                        ⬇️ 以下是为您找到的电影详情，点击可查看更多信息
+                    </div>
+                </div>
+            `;
+        }
+
+        // 从 AI 文本中提取电影名称（正则匹配）
+        function extractMovieTitlesFromText(text) {
+            const titles = [];
+            
+            // 匹配 《电影名》 格式
+            const regex1 = /《([^》]+)》/g;
+            let match;
+            while ((match = regex1.exec(text)) !== null) {
+                titles.push(match[1]);
+            }
+            
+            // 匹配 **电影名** 格式
+            const regex2 = /\*\*([^*]+)\*\*/g;
+            while ((match = regex2.exec(text)) !== null) {
+                const title = match[1].replace(/^《|》$/g, ''); // 去掉可能存在的书名号
+                if (!titles.includes(title)) {
+                    titles.push(title);
+                }
+            }
+            
+            console.log('提取到的电影名称:', titles);
+            return titles;
+        }
+
+        // 根据电影标题列表搜索电影
+        async function fetchMoviesByTitles(titles) {
+            try {
+                const movies = [];
+                
+                // 为每个标题搜索电影
+                for (const title of titles) {
+                    const response = await fetch(`${API_BASE_URL}/movies?q=${encodeURIComponent(title)}&limit=1`);
+                    const data = await response.json();
+                    
+                    if (data.items && data.items.length > 0) {
+                        movies.push(data.items[0]);
+                    }
+                }
+                
+                if (movies.length > 0) {
+                    renderMovies(movies, movies.length);
+                    document.getElementById('resultInfo').innerHTML = 
+                        `<span class="text-indigo-600">🤖 AI 为您推荐了 ${movies.length} 部电影</span>`;
+                } else {
+                    showNoMoviesFound();
+                }
+            } catch (error) {
+                console.error('获取电影失败:', error);
+                showError('获取推荐电影失败');
+            }
+        }
+
+        // 根据电影 ID 列表获取电影
+        async function fetchMoviesByIds(movieIds) {
+            try {
+                const promises = movieIds.map(id => 
+                    fetch(`${API_BASE_URL}/movies/${id}`).then(r => r.json())
+                );
+                const movies = await Promise.all(promises);
+                
+                if (movies.length > 0) {
+                    renderMovies(movies, movies.length);
+                    document.getElementById('resultInfo').innerHTML = 
+                        `<span class="text-indigo-600">🤖 AI 为您推荐了 ${movies.length} 部电影</span>`;
+                } else {
+                    showNoMoviesFound();
+                }
+            } catch (error) {
+                console.error('获取电影详情失败:', error);
+                showError('获取推荐电影失败');
+            }
+        }
+
+        function showNoMoviesFound() {
+            document.getElementById('resultInfo').innerHTML = 
+                `<span class="text-orange-600">⚠️ AI 已回复，但暂未找到对应的电影数据</span>`;
+            document.getElementById('movieList').innerHTML = '';
+        }
+
+        function hideAIResponse() {
+            const aiArea = document.getElementById('aiResponseArea');
+            aiArea.style.display = 'none';
+            aiArea.innerHTML = '';
+        }
+
+        // ========== 普通搜索功能 ==========
+        
         async function fetchMovies(page = 1) {
             showLoading(true);
+            hideAIResponse();
             
-            // 构建查询参数
             const params = new URLSearchParams({
                 page: page,
                 limit: 20,
@@ -212,8 +455,14 @@
                 if (response.ok) {
                     currentPage = data.page;
                     totalPages = data.total_pages;
-                    renderMovies(data.items, data.total);
-                    renderPagination(data);
+                    
+                    // 如果搜索无结果且有关键词，自动调用 AI
+                    if (data.items.length === 0 && keyword) {
+                        await askAI(keyword);
+                    } else {
+                        renderMovies(data.items, data.total);
+                        renderPagination(data);
+                    }
                 } else {
                     showError(data.detail || '查询失败');
                 }
@@ -224,13 +473,6 @@
             }
         }
 
-        // 搜索电影
-        function searchMovies() {
-            currentPage = 1;
-            fetchMovies(1);
-        }
-
-        // 重置搜索
         function resetSearch() {
             document.getElementById('searchInput').value = '';
             document.getElementById('sourceFilter').value = '';
@@ -238,16 +480,17 @@
             document.getElementById('minRatingFilter').value = '';
             document.getElementById('sortBy').value = 'rating';
             currentPage = 1;
+            hideAIResponse();
             fetchMovies(1);
         }
 
-        // 图片加载错误处理
+        // ========== 电影渲染 ==========
+        
         function handleImageError(img) {
             img.style.display = 'none';
             img.nextElementSibling.style.display = 'flex';
         }
 
-        // 渲染电影列表
         function renderMovies(movies, total) {
             const list = document.getElementById('movieList');
             const emptyState = document.getElementById('emptyState');
@@ -257,17 +500,21 @@
                 list.innerHTML = '';
                 list.classList.add('hidden');
                 emptyState.classList.remove('hidden');
-                resultInfo.innerHTML = '';
+                if (!resultInfo.innerHTML.includes('AI')) {
+                    resultInfo.innerHTML = '';
+                }
                 return;
             }
 
             list.classList.remove('hidden');
             emptyState.classList.add('hidden');
-            resultInfo.innerHTML = `找到 <strong class="text-indigo-600">${total}</strong> 部电影`;
+            
+            if (!resultInfo.innerHTML.includes('AI')) {
+                resultInfo.innerHTML = `找到 <strong class="text-indigo-600">${total}</strong> 部电影`;
+            }
 
             list.innerHTML = movies.map(movie => `
                 <div class="movie-card bg-white rounded-xl shadow-lg overflow-hidden" onclick="showMovieDetail(${movie.id})">
-                    <!-- 封面图片 -->
                     ${movie.cover_url ? `
                     <div class="relative">
                         <img 
@@ -276,16 +523,12 @@
                             class="movie-cover"
                             onerror="handleImageError(this)"
                         >
-                        <div class="movie-cover-placeholder img-error">
-                            🎬
-                        </div>
-                        <!-- 评分角标 -->
+                        <div class="movie-cover-placeholder img-error">🎬</div>
                         <div class="absolute top-2 right-2">
                             <span class="rating-badge text-white px-3 py-1 rounded-full font-bold text-sm shadow-lg">
                                 ⭐ ${movie.rating || 'N/A'}
                             </span>
                         </div>
-                        <!-- 来源角标 -->
                         <div class="absolute top-2 left-2">
                             <span class="text-xs font-bold px-3 py-1 bg-white bg-opacity-90 text-indigo-700 rounded-full backdrop-blur">
                                 ${movie.source ? movie.source.toUpperCase() : 'N/A'}
@@ -293,18 +536,13 @@
                         </div>
                     </div>
                     ` : `
-                    <!-- 无封面时显示渐变背景 -->
                     <div class="relative">
-                        <div class="movie-cover-placeholder">
-                            🎬
-                        </div>
-                        <!-- 评分角标 -->
+                        <div class="movie-cover-placeholder">🎬</div>
                         <div class="absolute top-2 right-2">
                             <span class="rating-badge text-white px-3 py-1 rounded-full font-bold text-sm shadow-lg">
                                 ⭐ ${movie.rating || 'N/A'}
                             </span>
                         </div>
-                        <!-- 来源角标 -->
                         <div class="absolute top-2 left-2">
                             <span class="text-xs font-bold px-3 py-1 bg-white bg-opacity-90 text-indigo-700 rounded-full backdrop-blur">
                                 ${movie.source ? movie.source.toUpperCase() : 'N/A'}
@@ -313,7 +551,6 @@
                     </div>
                     `}
                     
-                    <!-- 电影信息 -->
                     <div class="p-4">
                         <h3 class="text-lg font-bold text-gray-800 mb-2 line-clamp-2 min-h-[3.5rem]">
                             ${movie.title}
@@ -335,7 +572,6 @@
                         </div>
                     </div>
                     
-                    <!-- 底部按钮 -->
                     <div class="px-4 pb-4">
                         <button 
                             onclick="event.stopPropagation(); window.open('${movie.url || '#'}', '_blank')"
@@ -349,7 +585,6 @@
             `).join('');
         }
 
-        // 渲染分页
         function renderPagination(data) {
             const pagination = document.getElementById('pagination');
             
@@ -382,7 +617,6 @@
             `;
         }
 
-        // 显示电影详情
         async function showMovieDetail(movieId) {
             const modal = document.getElementById('movieModal');
             const modalBody = document.getElementById('modalBody');
@@ -397,7 +631,6 @@
                 if (response.ok) {
                     modalBody.innerHTML = `
                         <div class="space-y-6">
-                            <!-- 封面图片（详情页） -->
                             ${movie.cover_url ? `
                             <div class="w-full flex justify-center">
                                 <img 
@@ -409,7 +642,6 @@
                             </div>
                             ` : ''}
                             
-                            <!-- 标题和评分 -->
                             <div>
                                 <h3 class="text-3xl font-bold text-gray-800 mb-3">${movie.title}</h3>
                                 <div class="flex flex-wrap gap-3">
@@ -420,7 +652,6 @@
                                 ${movie.rating_count ? `<p class="mt-2 text-gray-600">🔥 <strong>${movie.rating_count.toLocaleString()}</strong> 人评分</p>` : ''}
                             </div>
 
-                            <!-- 导演和演员 -->
                             ${movie.director ? `
                             <div class="bg-gray-50 p-4 rounded-lg">
                                 <h4 class="font-bold text-gray-700 mb-2">🎬 导演</h4>
@@ -435,7 +666,6 @@
                             </div>
                             ` : ''}
 
-                            <!-- 剧情简介 -->
                             ${movie.summary ? `
                             <div class="bg-gray-50 p-4 rounded-lg">
                                 <h4 class="font-bold text-gray-700 mb-2">📝 剧情简介</h4>
@@ -443,7 +673,6 @@
                             </div>
                             ` : ''}
 
-                            <!-- 访问链接 -->
                             ${movie.url ? `
                             <div class="flex gap-3">
                                 <a 
@@ -456,7 +685,6 @@
                             </div>
                             ` : ''}
 
-                            <!-- 元数据 -->
                             ${movie.created_at ? `
                             <div class="text-center text-sm text-gray-500 pt-4 border-t">
                                 数据创建时间: ${new Date(movie.created_at).toLocaleString('zh-CN')}
@@ -472,26 +700,22 @@
             }
         }
 
-        // 关闭弹窗
         function closeModal() {
             document.getElementById('movieModal').classList.remove('active');
         }
 
-        // 点击弹窗外部关闭
         document.getElementById('movieModal').addEventListener('click', function(event) {
             if (event.target === this) {
                 closeModal();
             }
         });
 
-        // ESC 键关闭弹窗
         document.addEventListener('keydown', function(event) {
             if (event.key === 'Escape') {
                 closeModal();
             }
         });
 
-        // 显示/隐藏加载状态
         function showLoading(show) {
             const loading = document.getElementById('loading');
             const movieList = document.getElementById('movieList');
@@ -506,7 +730,6 @@
             }
         }
 
-        // 显示错误
         function showError(message) {
             const resultInfo = document.getElementById('resultInfo');
             resultInfo.innerHTML = `<span class="text-red-600">❌ ${message}</span>`;

@@ -117,14 +117,33 @@ DOWNLOAD_HANDLERS = {
     "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
     "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
 }
-# 3. 浏览器设置
-PLAYWRIGHT_BROWSER_TYPE = "chromium"
-PLAYWRIGHT_LAUNCH_OPTIONS = {
-    "headless": True, # 建议调试时先设为 False，看看浏览器到底怎么操作的
-    "timeout": 30000, 
-}
 
-REQUEST_FINGERPRINTER_IMPLEMENTATION = "2.7"
+
+# 3. 浏览器配置
+PLAYWRIGHT_LAUNCH_OPTIONS = {
+    "headless": True,  # 调试时改成 False 可以看到浏览器弹出
+    "timeout": 20 * 1000,  # 20秒超时
+    "args": [
+        "--disable-blink-features=AutomationControlled", # 配合 stealth 的双重保险
+        "--no-sandbox",
+    ]
+}
+# 4. 请求头 (伪装成 Win10 + Chrome)
+DEFAULT_REQUEST_HEADERS = {
+   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+}
+ROBOTSTXT_OBEY = False
+DOWNLOAD_DELAY = 2  # 哪怕慢一点，也要稳
+# # 3. 浏览器设置
+# PLAYWRIGHT_BROWSER_TYPE = "chromium"
+# PLAYWRIGHT_LAUNCH_OPTIONS = {
+#     "headless": True, # 建议调试时先设为 False，看看浏览器到底怎么操作的
+#     "timeout": 30000, 
+# }
+
+# REQUEST_FINGERPRINTER_IMPLEMENTATION = "2.7"
 
 # 4. (建议添加) 伪装 User-Agent，否则 Playwright 的默认头很容易被识别
-USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+# USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+# PLAYWRIGHT_LAUNCH_OPTIONS = {"headless": False}
