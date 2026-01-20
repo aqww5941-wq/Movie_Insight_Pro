@@ -1,7 +1,6 @@
 {
   "douban": [
     {
-      "_comment": "这是热门电影的接口，注意 type 是 movie",
       "url": "https://m.douban.com/rexxar/api/v2/subject/recent_hot/movie",
       "type": "api_json",
       "meta": {"category": "热门电影"}
@@ -23,6 +22,13 @@
       "url": "https://www.imdb.com/chart/moviemeter/?view=detailed",
       "type": "html_page",
       "meta": {"category": "popular"}
+    }
+  ],
+  "tomatoes": [
+    {
+      "url": "https://www.rottentomatoes.com/browse/movies_at_home/sort:popular",
+      "type": "html_json",
+      "meta": {"category": "tomatoes热门电影"}
     }
   ]
 }

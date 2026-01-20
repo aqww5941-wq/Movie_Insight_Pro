@@ -1,149 +1,127 @@
-# Scrapy settings for mySpider project
-#
-# For simplicity, this file contains only settings considered important or
-# commonly used. You can find more settings consulting the documentation:
-#
-#     https://docs.scrapy.org/en/latest/topics/settings.html
-#     https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
-#     https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 import os
 
+# =============================================================
+# 1. 核心 Reactor 配置 (⚠️ 必须放在文件最开头)
+# =============================================================
+# Scrapy-Playwright 必须使用 Asyncio Reactor
+TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
+
+# =============================================================
+# 2. 基础项目信息
+# =============================================================
 BOT_NAME = "mySpider"
 
 SPIDER_MODULES = ["mySpider.spiders"]
 NEWSPIDER_MODULE = "mySpider.spiders"
 
-ADDONS = {}
-
-EXTENSIONS = {
-    'mySpider.extensions.SpiderMonitorExtension': 500,
-}
-
-# Crawl responsibly by identifying yourself (and your website) on the user-agent
-#USER_AGENT = "mySpider (+http://www.yourdomain.com)"
-
-# Obey robots.txt rules
+# =============================================================
+# 3. 基础爬虫行为设置
+# =============================================================
+# 不遵守 robots.txt (Rotten Tomatoes 等大站通常会禁止爬虫)
 ROBOTSTXT_OBEY = False
 
-# Concurrency and throttling settings
-#CONCURRENT_REQUESTS = 16
-CONCURRENT_REQUESTS_PER_DOMAIN = 1
-DOWNLOAD_DELAY = 1
+# 日志级别 (调试时用 INFO，稳定后可改为 WARNING)
+LOG_LEVEL = "INFO"
 
-# Disable cookies (enabled by default)
-#COOKIES_ENABLED = False
+# User Agent (建议设置一个较新的浏览器 UA)
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/122.0.0.0 Safari/537.36"
+)
 
-# Disable Telnet Console (enabled by default)
-#TELNETCONSOLE_ENABLED = False
+# =============================================================
+# 4. 并发与延迟控制
+# =============================================================
+# 全局并发数：Playwright 比较吃内存，建议设为 CPU 核心数或稍低 (6-8 比较稳妥)
+CONCURRENT_REQUESTS = 16
 
-# Override the default request headers:
-#DEFAULT_REQUEST_HEADERS = {
-#    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-#    "Accept-Language": "en",
-#}
+# 单域名并发：针对详情页抓取，保持与全局一致即可
+CONCURRENT_REQUESTS_PER_DOMAIN = 16
 
-# Enable or disable spider middlewares
-# See https://docs.scrapy.org/en/latest/topics/spider-middleware.html
-#SPIDER_MIDDLEWARES = {
-#    "mySpider.middlewares.MyspiderSpiderMiddleware": 543,
-#}
+# 下载延迟：防止请求过快被封 IP (单位：秒)
+DOWNLOAD_DELAY = 0.5
+# Playwright 专用配置
+PLAYWRIGHT_MAX_CONTEXTS = 4  # 同时开启的浏览器窗口数
+PLAYWRIGHT_MAX_PAGES_PER_CONTEXT = 4 # 每个窗口复用的标签页数
 
-# Enable or disable downloader middlewares
-# See https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
-#DOWNLOADER_MIDDLEWARES = {
-#    "mySpider.middlewares.MyspiderDownloaderMiddleware": 543,
-#}
+# 超时设置 (关键优化)
+# 针对瀑布流列表页，翻页过程可能持续数分钟，必须设大
+DOWNLOAD_TIMEOUT = 30  # 30s
 
-# Enable or disable extensions
-# See https://docs.scrapy.org/en/latest/topics/extensions.html
-#EXTENSIONS = {
-#    "scrapy.extensions.telnet.TelnetConsole": None,
-#}
+# =============================================================
+# 5. Playwright 深度配置
+# =============================================================
+# 指定 http/https 协议使用 Playwright 处理
+DOWNLOAD_HANDLERS = {
+    "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+    "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+}
 
-# Configure item pipelines
-# See https://docs.scrapy.org/en/latest/topics/item-pipeline.html
+# 浏览器类型
+PLAYWRIGHT_BROWSER_TYPE = "chromium"
+
+# 启动选项
+PLAYWRIGHT_LAUNCH_OPTIONS = {
+    # ⚠️ 调试时设为 False (看浏览器动作)，生产环境设为 True (后台运行)
+    "headless": False, 
+    "timeout": 30000,  # 浏览器启动超时
+    "args": [
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-blink-features=AutomationControlled", # 核心反爬：隐藏自动化特征
+        "--window-size=1920,1080", # 设大窗口，防止按钮被遮挡无法点击
+        "--disable-images", # 禁用图片渲染
+        "--blink-settings=imagesEnabled=false", # 双重保险禁用图片
+    ],
+}
+
+
+# 资源加载过滤 (极速模式)
+# 拦截不必要的资源以提升速度（尤其是详情页）
+def should_abort_request(request):
+    return request.resource_type in [
+        "image", "font", "media", "beacon", "ad", "imageset"
+    ]
+PLAYWRIGHT_ABORT_REQUEST = should_abort_request
+
+# =============================================================
+# 6. Item Pipeline (数据管道)
+# =============================================================
 ITEM_PIPELINES = {
-#    "mySpider.pipelines.Movie_pipeline.MoviePipeline": 300,
+   # 'mySpider.pipelines.movie_pipeline.MoviePipeline': 300, # 如果有文件下载管道
    'mySpider.pipelines.mysql_pipeline.MysqlPipeline': 301,
 }
 
+# =============================================================
+# 7. MySQL 数据库配置 (环境自适应)
+# =============================================================
 MYSQL_HOST = os.getenv('MYSQL_HOST', '127.0.0.1')
+MYSQL_DBNAME = os.getenv('MYSQL_DBNAME', 'movie_db')
+MYSQL_USER = os.getenv('MYSQL_USER', 'root')
+MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', '000000')
 
-# 2. 关键：本地调试用 3307，Docker 内部用 3306
+# 端口逻辑：
+# 本地运行(127.0.0.1) -> 连 Docker 映射出的 3307
+# Docker 容器内运行 -> 连容器间网络的 3306
 if MYSQL_HOST == '127.0.0.1':
     MYSQL_PORT = 3307
 else:
     MYSQL_PORT = 3306
 
-MYSQL_DBNAME = os.getenv('MYSQL_DBNAME', 'movie_db')
-MYSQL_USER = os.getenv('MYSQL_USER', 'root')
-
-# 3. 确保密码与 docker-compose 中的一致
-MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', '000000')
-
-# Enable and configure the AutoThrottle extension (disabled by default)
-# See https://docs.scrapy.org/en/latest/topics/autothrottle.html
-#AUTOTHROTTLE_ENABLED = True
-# The initial download delay
-#AUTOTHROTTLE_START_DELAY = 5
-# The maximum download delay to be set in case of high latencies
-#AUTOTHROTTLE_MAX_DELAY = 60
-# The average number of requests Scrapy should be sending in parallel to
-# each remote server
-#AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
-# Enable showing throttling stats for every response received:
-#AUTOTHROTTLE_DEBUG = False
-
-# Enable and configure HTTP caching (disabled by default)
-# See https://docs.scrapy.org/en/latest/topics/downloader-middleware.html#httpcache-middleware-settings
-#HTTPCACHE_ENABLED = True
-#HTTPCACHE_EXPIRATION_SECS = 0
-#HTTPCACHE_DIR = "httpcache"
-#HTTPCACHE_IGNORE_HTTP_CODES = []
-#HTTPCACHE_STORAGE = "scrapy.extensions.httpcache.FilesystemCacheStorage"
-
-# Set settings whose default value is deprecated to a future-proof value
+# =============================================================
+# 8. 其他设置
+# =============================================================
+# 导出编码
 FEED_EXPORT_ENCODING = "utf-8"
 
-# 添加的Playwright配置
+# 禁用 Cookies (可选，设为 False 可减少被追踪风险，但在某些登录场景需开启)
+COOKIES_ENABLED = False
 
-# 1. 必须配置的异步 Reactor (必须放在最上面)
-TWISTED_REACTOR = 'twisted.internet.asyncioreactor.AsyncioSelectorReactor'
+# 请求指纹生成器 (推荐使用 2.7)
+REQUEST_FINGERPRINTER_IMPLEMENTATION = "2.7"
 
-# 2. 指定下载处理程序 (注意 https 和 http 都要指向 scrapy_playwright)
-# 修改 settings.py 中的 DOWNLOAD_HANDLERS
-DOWNLOAD_HANDLERS = {
-    # 尝试改用 http11 路径（这是 Scrapy 2.14 内部期望的路径）
-    "http": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
-    "https": "scrapy_playwright.handler.ScrapyPlaywrightDownloadHandler",
+# 扩展插件 (如果需要监控)
+EXTENSIONS = {
+   'mySpider.extensions.SpiderMonitorExtension': 500,
 }
-
-
-# 3. 浏览器配置
-PLAYWRIGHT_LAUNCH_OPTIONS = {
-    "headless": True,  # 调试时改成 False 可以看到浏览器弹出
-    "timeout": 20 * 1000,  # 20秒超时
-    "args": [
-        "--disable-blink-features=AutomationControlled", # 配合 stealth 的双重保险
-        "--no-sandbox",
-    ]
-}
-# 4. 请求头 (伪装成 Win10 + Chrome)
-DEFAULT_REQUEST_HEADERS = {
-   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-   "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-}
-ROBOTSTXT_OBEY = False
-DOWNLOAD_DELAY = 2  # 哪怕慢一点，也要稳
-# # 3. 浏览器设置
-# PLAYWRIGHT_BROWSER_TYPE = "chromium"
-# PLAYWRIGHT_LAUNCH_OPTIONS = {
-#     "headless": True, # 建议调试时先设为 False，看看浏览器到底怎么操作的
-#     "timeout": 30000, 
-# }
-
-# REQUEST_FINGERPRINTER_IMPLEMENTATION = "2.7"
-
-# 4. (建议添加) 伪装 User-Agent，否则 Playwright 的默认头很容易被识别
-# USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-# PLAYWRIGHT_LAUNCH_OPTIONS = {"headless": False}
