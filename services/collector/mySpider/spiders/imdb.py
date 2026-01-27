@@ -7,6 +7,11 @@ import json
 class ImdbSpider(scrapy.Spider):
     name = "imdb"
 
+    def __init__(self, task_id=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.task_id = task_id
+
+
     def start_requests(self):
         # 1. 读取配置文件
         config_path = Path("configs/spider_targets.json")

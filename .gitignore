@@ -1,6 +1,6 @@
 # 数据库原始文件 (对应你 tree 里的 mysql_data)
 mysql_data/
-
+rabbitmq_data/
 # 敏感配置文件
 .env
 
@@ -13,3 +13,4 @@ services/collector/.scrapy/
 
 # 系统文件
 .DS_Store
+.claude

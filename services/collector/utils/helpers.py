@@ -5,7 +5,7 @@ from email.mime.text import MIMEText
 from email.header import Header
 import re
 import os
-import dashscope
+
 from http import HTTPStatus
 
 load_dotenv()
@@ -98,6 +98,7 @@ class AIAgent:
         """
         调用 Qwen API 对电影剧情进行分析
         """
+        import dashscope
         api_key = os.getenv('DASHSCOPE_API_KEY')
         if not api_key:
             return "未配置 API KEY"

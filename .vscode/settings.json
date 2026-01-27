@@ -103,7 +103,13 @@
 
         ]
     },
-    "python.languageServer": "None",
+    "python.languageServer": "Pylance",
+    //禁用类型检查
+    "python.analysis.typeCheckingMode": "off",
+    // 禁用未解析模块的提示
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportMissingImports": "none"
+    },
     "python-envs.defaultEnvManager": "ms-python.python:conda",
     "python-envs.defaultPackageManager": "ms-python.python:conda",
     "python-envs.pythonProjects": [],

@@ -88,9 +88,15 @@ PLAYWRIGHT_ABORT_REQUEST = should_abort_request
 # =============================================================
 # 6. Item Pipeline (数据管道)
 # =============================================================
+# 选择一种模式启用：
+# 模式1: 直接写入 MySQL (推荐用于开发和测试)
+# ITEM_PIPELINES = {
+   # 'mySpider.pipelines.mysql_pipeline.MysqlPipeline': 300,
+# }
+
+# 模式2: 通过 RabbitMQ 写入 MySQL (推荐用于生产环境)
 ITEM_PIPELINES = {
-   # 'mySpider.pipelines.movie_pipeline.MoviePipeline': 300, # 如果有文件下载管道
-   'mySpider.pipelines.mysql_pipeline.MysqlPipeline': 301,
+   'mySpider.pipelines.rabbitmq_pipeline.RabbitMQPipeline': 301,
 }
 
 # =============================================================
