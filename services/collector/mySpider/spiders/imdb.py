@@ -30,8 +30,25 @@ class ImdbSpider(scrapy.Spider):
                 "playwright": True,
                 "playwright_include_page": True, # 如果需要执行自定义 JS，设为 True
                 "playwright_page_methods": [
-                    ("wait_for_selector", "main section"),    # 1. 使用元组形式，等待关键内容区域加载
-                    ("evaluate", "window.scrollBy(0, 500)"),   # 2. 模拟稍微滚动一下，触发懒加载
+                    # 1️⃣ 等首屏出来
+                    PageMethod("wait_for_load_state", "domcontentloaded"),
+                    PageMethod(
+                        "evaluate",
+                        """
+                        async () => {
+                            let lastHeight = 0;
+                            for (let i = 0; i < 10; i++) {
+                                window.scrollTo(0, document.body.scrollHeight);
+                                await new Promise(r => setTimeout(r, 1200));
+                                let newHeight = document.body.scrollHeight;
+                                if (newHeight === lastHeight) break;
+                                lastHeight = newHeight;
+                            }
+                        }
+                        """
+                    ),
+                    # 3️⃣ 给 DOM 一点稳定时间（很重要）
+                    PageMethod("wait_for_timeout", 1000),
                 ]
             }
             # 获取 JSON 里的业务配置
@@ -48,6 +65,7 @@ class ImdbSpider(scrapy.Spider):
     async def parse(self, response,**kwarge):
       
         nodes = response.xpath('//li[contains(@class, "ipc-metadata-list-summary-item")]')
+
 
         for node in nodes:
 

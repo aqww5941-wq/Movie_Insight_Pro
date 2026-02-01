@@ -7,6 +7,7 @@ python-dotenv
 # 数据库连接 (已切换为 PostgreSQL ORM)
 sqlalchemy>=2.0.0
 psycopg2-binary
+pgvector==0.2.4
 
 # Scrapy 异步相关
 Twisted==25.5.0
@@ -20,3 +21,6 @@ python-dateutil==2.9.0.post0
 # RabbitMQ 客户端依赖
 pika>=1.3.2
 tenacity>=8.2.3
+
+# 千问
+dashscope

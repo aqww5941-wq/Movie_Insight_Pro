@@ -188,10 +188,12 @@ async def chat_with_movie_agent(request: AgentChatRequest, db: AsyncSession = De
                 res = await db.execute(stmt)
                 if res.scalar():
                     movie_titles_found.append(title)
-        else:
-            logger.info("⚠️ AI 未提及具体电影，尝试关键词搜索...")
-            # 传递当前的 db session，不要使用 next(get_db())
-            movie_titles_found = await search_movies_by_keywords(request.query, db, limit=5)
+
+        if not movie_titles_found:
+            # 检查 AI 的回复里是否包含“相似度”关键字，如果包含，说明向量工具已运行但提取失败
+            if "相似度" not in ai_response:
+                logger.info("⚠️ AI 未提及库内电影且未触发向量检索，执行关键词搜索兜底...")
+                movie_titles_found = await search_movies_by_keywords(request.query, db, limit=5)
         
         return AgentChatResponse(
             status="success", 
@@ -313,7 +315,16 @@ async def random_movie(
     except Exception as e:
         logger.error(f"推荐查询错误: {e}")
         raise HTTPException(status_code=500, detail="推荐查询失败")
-
+    
+@app.on_event("startup")
+async def startup_event():
+    try:
+        # 预热 AI 连接，把 SSL 握手在启动时就做完
+        movie_assistant.ask("hi") 
+        logger.info("🚀 AI 链路预热完成")
+    except:
+        logger.warning("⚠️ 预热失败，可能网络未就绪")
+        
 @app.get("/health", tags=["系统"])
 async def health_check(db: AsyncSession = Depends(get_db)):
     """健康检查 (ORM版)"""
@@ -347,6 +358,7 @@ async def read_index():
 @app.get("/ui", tags=["前端页面"])
 async def ui_page():
     return FileResponse('static/index.html')
+
 
 if __name__ == "__main__":
     import uvicorn

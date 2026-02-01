@@ -108,7 +108,8 @@
     "python.analysis.typeCheckingMode": "off",
     // 禁用未解析模块的提示
     "python.analysis.diagnosticSeverityOverrides": {
-        "reportMissingImports": "none"
+        "reportMissingImports": "none",
+        "reportGeneralTypeIssues": "none"
     },
     "python-envs.defaultEnvManager": "ms-python.python:conda",
     "python-envs.defaultPackageManager": "ms-python.python:conda",

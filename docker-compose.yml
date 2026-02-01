@@ -19,7 +19,7 @@ services:
       retries: 5
 
   db:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     container_name: movie-postgres
     restart: always
     environment:
@@ -82,6 +82,7 @@ services:
       - RABBITMQ_HOST=rabbitmq
       - RABBITMQ_USERNAME=${RABBITMQ_USERNAME:-guest}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
     volumes:
       - ./services/collector:/app
       - ./data:/app/data
@@ -102,6 +103,7 @@ services:
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
     volumes:
       - ./services/backend:/app
+      - ./services/collector/utils:/app/utils
     depends_on:
       db:
         condition: service_healthy

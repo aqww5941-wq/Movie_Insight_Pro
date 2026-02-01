@@ -308,6 +308,7 @@
                             showNoMoviesFound();
                         }
                     }
+                    document.getElementById('pagination').innerHTML = '';
                 } else {
                     showError(data.detail || 'AI 推荐失败');
                 }
@@ -319,19 +320,23 @@
         }
 
         // 显示 AI 的推荐说明
+        // static/index.html
+
         function displayAIExplanation(aiAnswer, userQuery) {
             const aiArea = document.getElementById('aiResponseArea');
             aiArea.style.display = 'block';
             
+            // 使用 marked.js 或简单的换行替换，增加推荐理由的可读性
+            const formattedAnswer = aiAnswer.replace(/\n/g, '<br>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');;
+
             aiArea.innerHTML = `
-                <div class="ai-response-card">
-                    <div class="ai-badge">
-                        <span>🤖</span>
-                        <span>AI 推荐助手</span>
+                <div class="ai-response-card bg-white border-l-4 border-indigo-500 p-6 rounded-xl shadow-md mb-6 animate-fade-in">
+                    <div class="flex items-center gap-2 mb-3">
+                        <span class="text-2xl">🤖</span>
+                        <span class="font-bold text-indigo-700">AI 影评专家</span>
                     </div>
-                    <div class="text-white text-lg leading-relaxed whitespace-pre-wrap">${aiAnswer}</div>
-                    <div class="mt-4 text-white text-sm opacity-80">
-                        ⬇️ 以下是为您找到的电影详情，点击可查看更多信息
+                    <div class="text-gray-700 text-lg leading-relaxed italic">
+                        "${formattedAnswer}"
                     </div>
                 </div>
             `;
@@ -589,6 +594,7 @@
         function renderPagination(data) {
             const pagination = document.getElementById('pagination');
             
+            // 如果总页数小于等于1，清空分页控件
             if (data.total_pages <= 1) {
                 pagination.innerHTML = '';
                 return;
@@ -597,8 +603,8 @@
             pagination.innerHTML = `
                 <button 
                     onclick="fetchMovies(${data.page - 1})" 
-                    class="pagination-btn px-6 py-3 bg-white rounded-lg shadow hover:shadow-md transition font-medium ${!data.has_prev ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-50'}"
-                    ${!data.has_prev ? 'disabled' : ''}
+                    class="pagination-btn px-6 py-3 bg-white rounded-lg shadow hover:shadow-md transition font-medium ${data.page <= 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-50'}"
+                    ${data.page <= 1 ? 'disabled' : ''}
                 >
                     ⬅️ 上一页
                 </button>
@@ -610,8 +616,8 @@
                 
                 <button 
                     onclick="fetchMovies(${data.page + 1})" 
-                    class="pagination-btn px-6 py-3 bg-indigo-500 text-white rounded-lg shadow hover:shadow-md transition font-medium ${!data.has_next ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-600'}"
-                    ${!data.has_next ? 'disabled' : ''}
+                    class="pagination-btn px-6 py-3 bg-indigo-500 text-white rounded-lg shadow hover:shadow-md transition font-medium ${data.page >= data.total_pages ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-600'}"
+                    ${data.page >= data.total_pages ? 'disabled' : ''}
                 >
                     下一页 ➡️
                 </button>

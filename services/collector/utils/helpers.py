@@ -94,6 +94,30 @@ class DataCleaner:
 
 class AIAgent:
     @staticmethod
+    def generate_embedding(text):
+        """
+        [新增] 将电影简介转换为 1536 维向量
+        用于 PostgreSQL 的语义检索
+        """
+        import dashscope
+        api_key = os.getenv('DASHSCOPE_API_KEY')
+        if not api_key or not text:
+            return None
+
+        # 注意：这里调用的是 TextEmbedding 接口，不是之前的 Generation 接口
+        resp = dashscope.TextEmbedding.call(
+            model=dashscope.TextEmbedding.Models.text_embedding_v2,
+            input=text[:1500],  # 截取前1500字，防止超过 API 限制
+            api_key=api_key
+        )
+
+        if resp.status_code == HTTPStatus.OK:
+            # 返回的是一个浮点数列表 [0.12, -0.05, ...]
+            return resp.output['embeddings'][0]['embedding']
+        else:
+            print(f"❌ Embedding 失败: {resp.message}")
+            return None
+    @staticmethod
     def analyze_movie_plot(plot_text):
         """
         调用 Qwen API 对电影剧情进行分析

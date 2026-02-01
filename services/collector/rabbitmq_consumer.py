@@ -29,7 +29,7 @@ from configs.rabbitmq_config import (
 )
 
 from models import Movie, Base
-
+from utils.helpers import AIAgent, DataCleaner
 # ---------------- logging ----------------
 logging.basicConfig(
     level=logging.INFO,
@@ -83,6 +83,7 @@ class PgDatabaseManager:
                 "stars": stmt.excluded.stars,
                 "summary": stmt.excluded.summary,
                 "cover_url": stmt.excluded.cover_url,
+                "embedding": stmt.excluded.embedding, # <-- 新增：冲突时更新向量
                 "updated_at": func.now() # 手动更新时间戳
             }
             
@@ -225,6 +226,7 @@ class RabbitMQConsumer:
     # ---------- db operations ----------
     def _save_to_pg(self, msg):
         # 1. 数据清洗 (保持原有逻辑)
+        summary_text = msg.get("plot") or msg.get("summary", "")
         # 注意：Postgres 对类型要求比 MySQL 严格，务必确保类型正确
         clean_data = {
             "title": msg.get("title"),
@@ -235,10 +237,20 @@ class RabbitMQConsumer:
             "url": msg.get("url"),
             "director": self._join(msg.get("director")),
             "stars": self._join(msg.get("stars")),
-            "summary": msg.get("plot") or msg.get("summary", ""),
+            "summary": summary_text,
             "cover_url": msg.get("cover_url"),
         }
-
+        # --- 新增：生成向量数据 ---
+        if summary_text:
+            logger.info(f"🧠 正在为《{clean_data['title']}》生成语义向量...")
+            try:
+                # 调用你 helpers.py 里的方法
+                vector = AIAgent.generate_embedding(summary_text)
+                if vector:
+                    clean_data["embedding"] = vector
+                    logger.info(f"✨ 向量生成成功")
+            except Exception as e:
+                logger.error(f"❌ 向量生成异常: {e}")
         # 2. 调用 Manager 执行 Upsert
         if not clean_data["url"]:
             logger.warning("⚠️ 跳过无 URL 的数据")
