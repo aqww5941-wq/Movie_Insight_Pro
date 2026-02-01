@@ -3,10 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import logging
 import re
+from fastapi import Request 
 from typing import List, Optional, Literal, Dict, Any
 from datetime import datetime
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from agents.movie_agent import MovieAgent
 
 # 引入 SQLAlchemy 异步组件
@@ -119,19 +118,19 @@ async def search_movies_by_keywords(query: str, session: AsyncSession, limit: in
             conditions.append(Movie.rating >= 8.5)
 
         elif any(k in query for k in ["科幻", "太空", "未来", "星际"]):
-            conditions.append(or_(Movie.summary.like("%科幻%"), Movie.title.like("%科幻%")))
+            conditions.append(or_(Movie.summary.ilike("%科幻%"), Movie.title.ilike("%科幻%")))
 
         elif any(k in query for k in ["高分", "评分高", "评分最高", "经典", "佳片"]):
             conditions.append(Movie.rating >= 9.0)
 
         elif any(k in query for k in ["悬疑", "烧脑", "推理", "侦探"]):
-            conditions.append(or_(Movie.summary.like("%悬疑%"), Movie.title.like("%悬疑%"))) # 修正拼写
+            conditions.append(or_(Movie.summary.ilike("%悬疑%"), Movie.title.ilike("%悬疑%"))) # 修正拼写
 
         elif any(k in query for k in ["喜剧", "搞笑", "轻松", "幽默"]):
-            conditions.append(or_(Movie.summary.like("%喜剧%"), Movie.title.like("%喜剧%"))) # 修正拼写
+            conditions.append(or_(Movie.summary.ilike("%喜剧%"), Movie.title.ilike("%喜剧%"))) # 修正拼写
 
         elif any(k in query for k in ["动作", "战争", "枪战", "特工"]):
-            conditions.append(or_(Movie.summary.like("%动作%"), Movie.title.like("%动作%"))) # 修正拼写
+            conditions.append(or_(Movie.summary.ilike("%动作%"), Movie.title.ilike("%动作%"))) # 修正拼写
 
         elif any(k in query for k in ["最新", "新片", "近期", "2025", "2026"]):
             # 注意：year 字段在模型中定义为 String，比较时可能需要适配
@@ -141,7 +140,7 @@ async def search_movies_by_keywords(query: str, session: AsyncSession, limit: in
             director_match = re.search(r'([\u4e00-\u9fa5]+|[A-Za-z\s]+)(?:导演|执导)', query)
             if director_match:
                 director_name = director_match.group(1).strip()
-                conditions.append(Movie.director.like(f"%{director_name}%"))
+                conditions.append(Movie.director.ilike(f"%{director_name}%"))
         
         # 构建查询
         if not conditions:
@@ -162,7 +161,9 @@ async def search_movies_by_keywords(query: str, session: AsyncSession, limit: in
 # --- 路由定义 ---
 
 @app.post("/agent/chat", tags=["AI 智能助手"], response_model=AgentChatResponse)
-async def chat_with_movie_agent(request: AgentChatRequest, db: AsyncSession = Depends(get_db)):
+async def chat_with_movie_agent(request: AgentChatRequest, raw_request: Request, db: AsyncSession = Depends(get_db)):
+    client_ip = raw_request.headers.get("X-Real-IP") or raw_request.client.host
+    logger.info(f"📍 请求来源 IP: {client_ip}")
     """
     🤖 AI 影评专家接口 (Async + PG)
     """
@@ -174,7 +175,8 @@ async def chat_with_movie_agent(request: AgentChatRequest, db: AsyncSession = De
         
         # 1. AI 回复
         ai_response = movie_assistant.ask(request.query)
-        
+
+        logger.info(f"🤖 AI 响应长度: {len(ai_response)} 字符")
         # 2. 提取电影名
         extracted_titles = extract_movie_titles_from_text(ai_response)
         movie_titles_found = []
@@ -347,17 +349,6 @@ async def health_check(db: AsyncSession = Depends(get_db)):
             "status": "unhealthy",
             "error": str(e)
         }
-
-# 挂载静态文件
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-@app.get("/", tags=["前端页面"])
-async def read_index():
-    return FileResponse('static/index.html')
-
-@app.get("/ui", tags=["前端页面"])
-async def ui_page():
-    return FileResponse('static/index.html')
 
 
 if __name__ == "__main__":

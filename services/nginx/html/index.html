@@ -214,9 +214,12 @@
         </div>
 
         <!-- 加载状态 -->
-        <div id="loading" class="hidden text-center py-12">
+       <div id="loading" class="hidden text-center py-12">
             <div class="inline-block animate-spin rounded-full h-12 w-12 border-4 border-indigo-500 border-t-transparent"></div>
-            <p class="mt-4 text-gray-600">AI 正在思考并查找电影...</p>
+            <div class="mt-4 text-gray-600 font-medium space-y-1">
+                <p>AI 正在检索向量库...</p>
+                <p class="text-xs text-gray-400">正在生成 1536 维语义特征并匹配 HNSW 索引</p>
+            </div>
         </div>
 
         <!-- 空状态 -->
@@ -241,7 +244,7 @@
     </div>
 
     <script>
-        const API_BASE_URL = 'http://localhost:8000';
+        const API_BASE_URL = window.location.origin + '/api';
         
         let currentPage = 1;
         let totalPages = 1;
@@ -326,8 +329,11 @@
             const aiArea = document.getElementById('aiResponseArea');
             aiArea.style.display = 'block';
             
-            // 使用 marked.js 或简单的换行替换，增加推荐理由的可读性
-            const formattedAnswer = aiAnswer.replace(/\n/g, '<br>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');;
+            // 增强版替换逻辑：处理换行、加粗和列表
+            const formattedAnswer = aiAnswer
+                .replace(/\n/g, '<br>')
+                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+                .replace(/^\d\.\s/gm, '• '); // 将数字列表转为圆点，视觉更统一
 
             aiArea.innerHTML = `
                 <div class="ai-response-card bg-white border-l-4 border-indigo-500 p-6 rounded-xl shadow-md mb-6 animate-fade-in">
@@ -336,7 +342,7 @@
                         <span class="font-bold text-indigo-700">AI 影评专家</span>
                     </div>
                     <div class="text-gray-700 text-lg leading-relaxed italic">
-                        "${formattedAnswer}"
+                        ${formattedAnswer}
                     </div>
                 </div>
             `;

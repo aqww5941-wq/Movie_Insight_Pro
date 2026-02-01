@@ -91,8 +91,8 @@ services:
   backend:
     build: ./services/backend
     container_name: movie-api
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     environment:
       - TZ=Asia/Shanghai
       - PG_HOST=db
@@ -107,3 +107,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+  nginx:
+    image: nginx:alpine
+    container_name: movie-nginx
+    ports:
+      - "80:80"  # 宿主机的 80 端口指向 Nginx
+    volumes:
+      - ./services/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./services/nginx/html:/usr/share/nginx/html:ro  # 挂载前端代码
+    depends_on:
+      - backend
+
