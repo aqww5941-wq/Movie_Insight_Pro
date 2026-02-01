@@ -10,6 +10,8 @@ from langchain_core.messages import HumanMessage
 try:
     from .tools import get_movie_table_schema, query_movie_db
 except ImportError:
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
     from tools import get_movie_table_schema, query_movie_db
 
 load_dotenv()

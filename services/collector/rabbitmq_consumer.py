@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 """
-RabbitMQ 消息消费者 (独立同步版)
-职责：消费 MQ → 校验/清洗 → MySQL
+RabbitMQ 消息消费者 (PostgreSQL + SQLAlchemy 同步版)
+职责：消费 MQ → 校验/清洗 → PostgreSQL (Upsert)
 """
 import json
 import logging
 import signal
 import sys
+import os
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 import pika
-import pymysql
-from dbutils.pooled_db import PooledDB # 需要 pip install DBUtils
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# 只需要保留配置文件的引用
+# SQLAlchemy 导入
+from sqlalchemy import create_engine, Column, Integer, String, Float, Text, DateTime, func
+from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+# 配置引用
 from configs.rabbitmq_config import (
     RABBITMQ_PARAMS,
     MOVIE_QUEUE_NAME,
@@ -23,6 +28,8 @@ from configs.rabbitmq_config import (
     EXCHANGE_TYPE,
 )
 
+from models import Movie, Base
+
 # ---------------- logging ----------------
 logging.basicConfig(
     level=logging.INFO,
@@ -30,48 +37,80 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ==========================================
-# 1. 定义一个独立的同步 MySQL 连接池类
-# ==========================================
-class SyncMysqlPool:
-    def __init__(self, settings):
-        self.pool = PooledDB(
-            creator=pymysql,
-            maxconnections=15,  # 稍微大于线程池数量(10)
-            mincached=2,
-            maxcached=5,
-            blocking=True,      # 连接池满了等待
-            host=settings.get('MYSQL_HOST'),
-            port=int(settings.get('MYSQL_PORT', 3306)),
-            user=settings.get('MYSQL_USER'),
-            password=settings.get('MYSQL_PASSWORD'),
-            database=settings.get('MYSQL_DBNAME'),
-            charset='utf8mb4',
-        )
 
-    def execute_write(self, sql, params):
-        """执行写操作（自动提交/回滚）"""
-        conn = self.pool.connection()
-        cursor = conn.cursor()
+# ==========================================
+# 2. 数据库管理类 (SQLAlchemy Sync)
+# ==========================================
+class PgDatabaseManager:
+    def __init__(self, settings):
+        # 构造 PostgreSQL 连接字符串
+        # 格式: postgresql+psycopg2://user:password@host:port/dbname
+        db_url = f"postgresql+psycopg2://{settings['PG_USER']}:{settings['PG_PASSWORD']}@{settings['PG_HOST']}:{settings['PG_PORT']}/{settings['PG_DBNAME']}"
+        
+        self.engine = create_engine(
+            db_url,
+            pool_size=15,       # 稍微大于线程池数量(10)
+            max_overflow=5,
+            pool_pre_ping=True, # 自动检测断连并重连
+            echo=False          # 设为 True 可打印 SQL 用于调试
+        )
+        self.SessionLocal = sessionmaker(bind=self.engine)
+        
+        # 自动建表 (如果表不存在)
         try:
-            cursor.execute(sql, params)
-            conn.commit()
+            Base.metadata.create_all(self.engine)
+            logger.info("✅ 数据库表结构校验完成")
         except Exception as e:
-            conn.rollback()
+            logger.error(f"❌ 无法创建表结构: {e}")
+            sys.exit(1)
+
+    def upsert_movie(self, movie_data):
+        """
+        执行 Postgres 特有的 Upsert (Insert on Conflict Update)
+        """
+        session = self.SessionLocal()
+        try:
+            # 1. 构建插入语句
+            stmt = pg_insert(Movie).values(**movie_data)
+            
+            # 2. 定义冲突时的更新策略
+            # 当 url 冲突时，更新除 id, url, created_at 之外的字段
+            update_dict = {
+                "title": stmt.excluded.title, # 虽然标题一般不变，但也可能修正
+                "rating": stmt.excluded.rating,
+                "rating_count": stmt.excluded.rating_count,
+                "director": stmt.excluded.director,
+                "stars": stmt.excluded.stars,
+                "summary": stmt.excluded.summary,
+                "cover_url": stmt.excluded.cover_url,
+                "updated_at": func.now() # 手动更新时间戳
+            }
+            
+            # 3. 组装语句
+            upsert_stmt = stmt.on_conflict_do_update(
+                index_elements=['url'], # 冲突检测字段
+                set_=update_dict
+            )
+            
+            # 4. 执行
+            session.execute(upsert_stmt)
+            session.commit()
+            
+        except Exception as e:
+            session.rollback()
             raise e
         finally:
-            cursor.close()
-            conn.close()
+            session.close()
 
 # ==========================================
 # 2. 消费者逻辑
 # ==========================================
 class RabbitMQConsumer:
-    def __init__(self, mysql_settings):
-        self.mysql_settings = mysql_settings
+    def __init__(self, db_settings):
+        self.db_settings = db_settings
         self.connection = None
         self.channel = None
-        self.db = None # 这里将存放 SyncMysqlPool 实例
+        self.db_manager = None 
         self.executor = ThreadPoolExecutor(max_workers=10)
         self._running = False
 
@@ -84,23 +123,19 @@ class RabbitMQConsumer:
         logger.info("🛑 收到退出信号，准备关闭 Consumer")
         self.stop()
 
-    def init_mysql(self):
-        # ⚠️ 关键修改：直接使用上面定义的同步池，不再引用 Scrapy Pipeline
+    def init_db(self):
         try:
-            self.db = SyncMysqlPool(self.mysql_settings)
-            logger.info("✅ MySQL 同步连接池就绪")
+            self.db_manager = PgDatabaseManager(self.db_settings)
+            logger.info("✅ PostgreSQL 连接池就绪")
         except Exception as e:
-            logger.error(f"❌ MySQL 连接失败: {e}")
+            logger.error(f"❌ 数据库初始化失败: {e}")
             sys.exit(1)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(1, 3, 10))
     def connect_rabbitmq(self):
-        # 拷贝一份配置，避免修改全局变量
         params = RABBITMQ_PARAMS.copy()
-        # 提取并移除 pika 不认识的 username/password 字段
         user = params.pop('username','guest')
         pwd = params.pop('password','guest')
-        # 创建 pika 需要的凭证对象
         credentials = pika.PlainCredentials(user,pwd)
         params['credentials'] = credentials
 
@@ -129,8 +164,8 @@ class RabbitMQConsumer:
 
     def start(self):
         logger.info("🚀 RabbitMQ Consumer 启动中...")
-        self.init_mysql() # 先连数据库
-        self.connect_rabbitmq() # 再连 MQ
+        self.init_db() # 初始化 PG
+        self.connect_rabbitmq()
         self._running = True
 
         self.channel.basic_consume(
@@ -156,7 +191,6 @@ class RabbitMQConsumer:
     def _on_message(self, ch, method, props, body):
         try:
             message = json.loads(body.decode("utf-8"))
-            # 提交给线程池处理
             self.executor.submit(
                 self._handle_message,
                 message,
@@ -168,12 +202,13 @@ class RabbitMQConsumer:
 
     def _handle_message(self, message, delivery_tag):
         try:
-            self._save_to_mysql(message)
+            self._save_to_pg(message)
             self._threadsafe_ack(delivery_tag)
             logger.info(f"✅ 入库成功: {message.get('title')}")
         except Exception as e:
             logger.error(f"❌ 入库失败: {e}")
-            # 这里可以选择是否 requeue，如果是因为数据脏了，requeue=False 避免死循环
+            # 如果是数据格式严重错误，建议不要 requeue，否则会死循环
+            # 这里保守起见设为 True，生产环境可根据 Error 类型判断
             self._threadsafe_reject(delivery_tag)
 
     # ---------- ack safely ----------
@@ -187,48 +222,34 @@ class RabbitMQConsumer:
             lambda: self.channel.basic_reject(tag, requeue=True)
         )
 
-    # ---------- db ----------
-    def _save_to_mysql(self, msg):
-        # 数据清洗逻辑（直接保留在这里，无需调用 helper 防止循环引用）
-        rating = self._to_float(msg.get("rating"))
-        count = self._clean_count(msg.get("rating_count"))
-        director = self._join(msg.get("director"))
-        stars = self._join(msg.get("stars"))
-        summary = msg.get("plot") or msg.get("summary", "")
+    # ---------- db operations ----------
+    def _save_to_pg(self, msg):
+        # 1. 数据清洗 (保持原有逻辑)
+        # 注意：Postgres 对类型要求比 MySQL 严格，务必确保类型正确
+        clean_data = {
+            "title": msg.get("title"),
+            "year": str(msg.get("year", "")), # 转字符串
+            "rating": self._to_float(msg.get("rating")),
+            "rating_count": self._clean_count(msg.get("rating_count")),
+            "source": msg.get("source", msg.get("spider")),
+            "url": msg.get("url"),
+            "director": self._join(msg.get("director")),
+            "stars": self._join(msg.get("stars")),
+            "summary": msg.get("plot") or msg.get("summary", ""),
+            "cover_url": msg.get("cover_url"),
+        }
 
-        sql = """
-        INSERT INTO movies
-        (title, year, rating, rating_count, source, url, director, stars, summary, cover_url)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        ON DUPLICATE KEY UPDATE
-            rating=VALUES(rating),
-            rating_count=VALUES(rating_count),
-            director=VALUES(director),
-            stars=VALUES(stars),
-            summary=VALUES(summary),
-            cover_url=VALUES(cover_url)
-        """
+        # 2. 调用 Manager 执行 Upsert
+        if not clean_data["url"]:
+            logger.warning("⚠️ 跳过无 URL 的数据")
+            return
 
-        params = (
-            msg.get("title"),
-            msg.get("year"),
-            rating,
-            count,
-            msg.get("source", msg.get("spider")),
-            msg.get("url"),
-            director,
-            stars,
-            summary,
-            msg.get("cover_url"),
-        )
+        self.db_manager.upsert_movie(clean_data)
 
-        # 调用我们自己的同步池
-        self.db.execute_write(sql, params)
-
-    # ---------- utils (内部工具函数，解耦依赖) ----------
+    # ---------- utils (内部工具函数) ----------
     def _join(self, v):
         if isinstance(v, list):
-            return ",".join(v)
+            return ",".join(str(x) for x in v) # 确保子元素也是 str
         return v or ""
 
     def _to_float(self, v):
@@ -250,20 +271,17 @@ class RabbitMQConsumer:
         except Exception:
             return 0
 
-
 def main():
-    # 这里我们直接读取环境变量，不依赖 scrapy get_project_settings
-    import os
     from dotenv import load_dotenv
     load_dotenv()
 
-    # 构造简单的配置字典，解耦 Scrapy
+    # 读取新的 PG 环境变量
     settings = {
-        'MYSQL_HOST': os.getenv('MYSQL_HOST', 'db'),
-        'MYSQL_PORT': int(os.getenv('MYSQL_PORT', 3306)),
-        'MYSQL_USER': os.getenv('MYSQL_USER', 'root'),
-        'MYSQL_PASSWORD': os.getenv('MYSQL_PASSWORD', '000000'),
-        'MYSQL_DBNAME': os.getenv('MYSQL_DBNAME', 'movie_db')
+        'PG_HOST': os.getenv('PG_HOST', 'db'),
+        'PG_PORT': int(os.getenv('PG_PORT', 5432)),
+        'PG_USER': os.getenv('PG_USER', 'root'),
+        'PG_PASSWORD': os.getenv('PG_PASSWORD', '000000'),
+        'PG_DBNAME': os.getenv('PG_DBNAME', 'movie_db')
     }
 
     consumer = RabbitMQConsumer(settings)
@@ -274,7 +292,6 @@ def main():
     except KeyboardInterrupt:
         consumer.stop()
         sys.exit(0)
-
 
 if __name__ == "__main__":
     main()

@@ -35,7 +35,7 @@ class ImdbSpider(scrapy.Spider):
                 ]
             }
             # 获取 JSON 里的业务配置
-            json_meta = target.get('mata',{})
+            json_meta = target.get('meta',{})
 
             final_meta = {**playwright_meta, **json_meta}
 
