@@ -77,6 +77,7 @@ class PgDatabaseManager:
             # 当 url 冲突时，更新除 id, url, created_at 之外的字段
             update_dict = {
                 "title": stmt.excluded.title, # 虽然标题一般不变，但也可能修正
+                "year": stmt.excluded.year,
                 "rating": stmt.excluded.rating,
                 "rating_count": stmt.excluded.rating_count,
                 "director": stmt.excluded.director,

@@ -107,54 +107,21 @@ def extract_movie_titles_from_text(text: str) -> List[str]:
     # 去重
     return list(set(titles))
 
-# --- 辅助函数：根据查询关键词搜索电影 (ORM版) ---
-async def search_movies_by_keywords(query: str, session: AsyncSession, limit: int = 5) -> List[str]:
+# 根据查询关键词搜索电影 (ORM版) ---
+async def search_movies_by_keywords(query: str, session: AsyncSession, limit: int = 5):
     """根据用户查询关键词从数据库搜索电影，返回标题列表"""
     try:
-        stmt = select(Movie.title)
-        conditions = []
+        stmt = select(Movie.title).where(
+            or_(
+                Movie.title.ilike(f"%{query}%"),
+                Movie.summary.ilike(f"%{query}%")
+            )
+        ).order_by(desc(Movie.rating)).limit(limit)
 
-        if any(k in query for k in ["温馨", "感人", "温暖", "治愈", "亲情", "家庭"]):
-            conditions.append(Movie.rating >= 8.5)
-
-        elif any(k in query for k in ["科幻", "太空", "未来", "星际"]):
-            conditions.append(or_(Movie.summary.ilike("%科幻%"), Movie.title.ilike("%科幻%")))
-
-        elif any(k in query for k in ["高分", "评分高", "评分最高", "经典", "佳片"]):
-            conditions.append(Movie.rating >= 9.0)
-
-        elif any(k in query for k in ["悬疑", "烧脑", "推理", "侦探"]):
-            conditions.append(or_(Movie.summary.ilike("%悬疑%"), Movie.title.ilike("%悬疑%"))) # 修正拼写
-
-        elif any(k in query for k in ["喜剧", "搞笑", "轻松", "幽默"]):
-            conditions.append(or_(Movie.summary.ilike("%喜剧%"), Movie.title.ilike("%喜剧%"))) # 修正拼写
-
-        elif any(k in query for k in ["动作", "战争", "枪战", "特工"]):
-            conditions.append(or_(Movie.summary.ilike("%动作%"), Movie.title.ilike("%动作%"))) # 修正拼写
-
-        elif any(k in query for k in ["最新", "新片", "近期", "2025", "2026"]):
-            # 注意：year 字段在模型中定义为 String，比较时可能需要适配
-            conditions.append(Movie.year >= "2025") 
-
-        elif "导演" in query or "执导" in query:
-            director_match = re.search(r'([\u4e00-\u9fa5]+|[A-Za-z\s]+)(?:导演|执导)', query)
-            if director_match:
-                director_name = director_match.group(1).strip()
-                conditions.append(Movie.director.ilike(f"%{director_name}%"))
-        
-        # 构建查询
-        if not conditions:
-            # 默认：返回评分最高的
-            stmt = stmt.order_by(desc(Movie.rating))
-        else:
-            stmt = stmt.where(or_(*conditions) if len(conditions) > 1 else conditions[0])
-            stmt = stmt.order_by(desc(Movie.rating)) # 即使有关键词，也按评分排序
-
-        stmt = stmt.limit(limit)
         result = await session.execute(stmt)
         return result.scalars().all()
     except Exception as e:
-        logger.error(f"❌ 搜索出错: {e}")
+        logger.error(f"❌ 搜索报错: {e}")
         return []
 
 
@@ -194,7 +161,7 @@ async def chat_with_movie_agent(request: AgentChatRequest, raw_request: Request,
         if not movie_titles_found:
             # 检查 AI 的回复里是否包含“相似度”关键字，如果包含，说明向量工具已运行但提取失败
             if "相似度" not in ai_response:
-                logger.info("⚠️ AI 未提及库内电影且未触发向量检索，执行关键词搜索兜底...")
+                logger.info("💡 触发 Fallback:AI 结果为空，正在执行 pg_trgm 全文检索...")
                 movie_titles_found = await search_movies_by_keywords(request.query, db, limit=5)
         
         return AgentChatResponse(

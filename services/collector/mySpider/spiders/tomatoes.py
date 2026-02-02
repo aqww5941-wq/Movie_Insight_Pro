@@ -67,8 +67,8 @@ class TomatoesSpider(scrapy.Spider):
                                 href: card.getAttribute('href'),
                                 title: titleNode ? titleNode.innerText.trim() : "Unknown"
                             });
-                            // 3. 立即自杀 (删除节点)，防止浏览器卡顿
-                            card.remove(); 
+                            card.setAttribute('data-processed', 'true');
+                            card.style.display = 'none';
                         });
                         return results;
                     }
@@ -119,16 +119,17 @@ class TomatoesSpider(scrapy.Spider):
                             
                             # 点击 (给30秒)
                             load_more_btn = page.locator('button[data-qa="dlp-load-more-button"]')
-                            await load_more_btn.click(force=True, timeout=30000)
+                            await load_more_btn.click(force=True, timeout=15000)
+                            await load_more_btn.click(force=True)
                             
                             # 等待新数据 (JS 检测，比 Python 轮询更准)
                             await page.wait_for_function("""
-                                document.querySelectorAll('a[data-qa="discovery-media-list-item-caption"]').length > 0
-                            """, timeout=30000)
+                                () => document.querySelectorAll('a[data-qa="discovery-media-list-item-caption"]:not([data-processed])').length > 0
+                            """, timeout=20000)
                             
                             current_loop += 1
                             # 稍微休息，防封
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(2)
                             
                         except Exception as e:
                             self.logger.warning(f"🛑 翻页受阻 (超时或到底): {e}")
@@ -148,12 +149,18 @@ class TomatoesSpider(scrapy.Spider):
         # 建议加上 try-except 保护
         try:
             plot = response.xpath('//div[contains(@slot,"description")]//rt-text[@slot="content"]/text()').get()
-            year_raw = response.xpath('//rt-text[@slot="metadataProp"][2]//text()').getall()
+            year_raw = response.xpath('//rt-text[@slot="metadata-prop"][2]//text()').getall()
             year_match = re.search(r'(\d{4})', "".join(year_raw))
             year = year_match.group(1) if year_match else "N/A"
 
-            rating = response.xpath('//div[@class="media-scorecard no-border"]//rt-text[@slot="audienceScore"]/text()').get()
-            
+            raw_rating = response.xpath('//div[@class="media-scorecard no-border"]//rt-text[@slot="audience-score"]/text()').get()
+            clean_rating = 0.0
+            if raw_rating:
+                # 使用正则提取数字部分，防止带有特殊字符或空格
+                match = re.search(r'(\d+)', raw_rating)
+                if match:
+                    # 将百分比转为 10 分制： 96 -> 9.6
+                    clean_rating = round(float(match.group(1)) / 10, 1)
             # 使用 xpath 的 string() 方法可能更稳健
             director = response.xpath('//p[@data-qa="person-role" and contains(text(), "Director")]/preceding-sibling::p[@data-qa="person-name"]/text()').getall()
             actors = response.xpath('//p[@data-qa="person-role" and contains(text(), "Actor")]/preceding-sibling::p[@data-qa="person-name"]/text()').getall()
@@ -161,12 +168,12 @@ class TomatoesSpider(scrapy.Spider):
             raw_cover_url = response.xpath('//media-scorecard//rt-img/@src').get()
             clean_cover = DataCleaner.clean_cover_url(raw_cover_url) if raw_cover_url else None
             
-            rating_count = response.xpath('//rt-link[@slot="audienceReviews"]/text()').re_first(r'[\d,]+\+?\s*Ratings') or "No rating_count"
+            rating_count = response.xpath('//rt-link[@slot="audience-reviews"]/text()').re_first(r'[\d,]+\+?\s*Ratings') or "No rating_count"
 
             yield {
                 "title": response.meta.get("original_title", "Unknown"),
                 "year": year,
-                "rating": rating.strip() if rating else "No rating",
+                "rating": clean_rating,
                 "rating_count": rating_count,
                 "plot": plot.strip() if plot else "Unknown plot",
                 "Director": [d.strip() for d in director],
