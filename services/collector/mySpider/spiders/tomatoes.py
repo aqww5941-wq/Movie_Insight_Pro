@@ -161,9 +161,24 @@ class TomatoesSpider(scrapy.Spider):
                 if match:
                     # 将百分比转为 10 分制： 96 -> 9.6
                     clean_rating = round(float(match.group(1)) / 10, 1)
-            # 使用 xpath 的 string() 方法可能更稳健
-            director = response.xpath('//p[@data-qa="person-role" and contains(text(), "Director")]/preceding-sibling::p[@data-qa="person-name"]/text()').getall()
-            actors = response.xpath('//p[@data-qa="person-role" and contains(text(), "Actor")]/preceding-sibling::p[@data-qa="person-name"]/text()').getall()
+          
+            director_nodes = response.xpath(
+                '//div[@slot="insetText" and .//p[@data-qa="person-role" and contains(text(), "Director")]]'
+                '//p[@data-qa="person-name"]/text()'
+            ).getall()
+            director = [d.strip() for d in director_nodes if d.strip()]
+
+            all_people = response.xpath('//a[@data-qa="person-item"]')
+            actors = []
+            for person in all_people:
+                role = person.xpath('.//p[@data-qa="person-role"]/text()').get()
+                name = person.xpath('.//p[@data-qa="person-name"]/text()').get()
+            
+                if role and name:
+                    role_clean = role.strip()
+                    # 排除导演，剩下的加入演员列表
+                    if "Director" not in role_clean:
+                        actors.append(name.strip())
             
             raw_cover_url = response.xpath('//media-scorecard//rt-img/@src').get()
             clean_cover = DataCleaner.clean_cover_url(raw_cover_url) if raw_cover_url else None
@@ -176,8 +191,8 @@ class TomatoesSpider(scrapy.Spider):
                 "rating": clean_rating,
                 "rating_count": rating_count,
                 "plot": plot.strip() if plot else "Unknown plot",
-                "Director": [d.strip() for d in director],
-                "stars": [name.strip() for name in actors][:5],
+                "director": director,
+                "stars": actors[:5],
                 "url": response.url,
                 "cover_url": clean_cover
             }

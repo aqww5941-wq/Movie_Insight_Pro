@@ -71,7 +71,7 @@ class ImdbSpider(scrapy.Spider):
 
             title = node.xpath('.//h3/text()').get()
 
-            Director = node.xpath('.//span[contains(text(), "Director")]/following-sibling::span//a/text()').getall()
+            director = node.xpath('.//span[contains(text(), "Director")]/following-sibling::span//a/text()').getall()
             # cleaned_Director = [a.strip() for a in Director if a and a.strip()]
 
             actors = node.xpath('.//span[contains(text(), "Stars")]/following-sibling::span//a/text()').getall()
@@ -99,7 +99,7 @@ class ImdbSpider(scrapy.Spider):
                 "rating": rating.strip() if rating else "No rating",
                 "rating_count": rating_count.strip() if rating_count else "No rating_count",
                 "plot": plot.strip() if plot else "Unknow plot",
-                "Director": Director if Director else "Unknow Director",
+                "director": director if director else "Unknow Director",
                 "stars": [name.strip() for name in actors if name.strip()],
                 "url": clean_url,
                 "cover_url": cover_url

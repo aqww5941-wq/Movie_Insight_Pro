@@ -118,4 +118,11 @@ services:
       - ./services/nginx/html:/usr/share/nginx/html:ro  # 挂载前端代码
     depends_on:
       - backend
+    
+  redis:
+    image: redis:7-alpine
+    container_name: movie-redis
+    ports:
+      - "6379:6379"
+    restart: always
 

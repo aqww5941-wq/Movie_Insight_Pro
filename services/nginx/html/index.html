@@ -3,283 +3,290 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>电影 AI 助手 - 完整版</title>
+    <title>Movie Insight Pro - AI 影评专家</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
     <style>
-        .movie-card {
-            cursor: pointer;
-            transition: all 0.3s ease;
+        /* --- 全局字体与背景 --- */
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background-color: #f8fafc;
+            color: #1e293b;
+            overflow-x: hidden;
         }
-        .movie-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+
+
+        /* 动态流动背景 */
+        .ambient-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: -1;
+            background: 
+                radial-gradient(at 0% 0%, hsla(253,16%,7%,1) 0, transparent 50%), 
+                radial-gradient(at 50% 0%, hsla(225,39%,30%,1) 0, transparent 50%), 
+                radial-gradient(at 100% 0%, hsla(339,49%,30%,1) 0, transparent 50%);
+            background-size: 200% 200%;
+            animation: gradientMove 15s ease infinite;
         }
-        .rating-badge {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        
+        @keyframes gradientMove {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
         }
-        .pagination-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
+
+        /* --- 毛玻璃组件 --- */
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.05);
         }
-        .movie-cover {
-            width: 100%;
-            height: 300px;
-            object-fit: cover;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+
+        .glass-card {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
         }
-        .movie-cover-placeholder {
-            width: 100%;
-            height: 300px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 4rem;
+
+        .glass-card:hover {
+            transform: translateY(-8px) scale(1.02);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            border-color: rgba(99, 102, 241, 0.4);
+            z-index: 10;
         }
+
+        /* --- 骨架屏动画 --- */
+        .skeleton {
+            background: #e2e8f0;
+            background: linear-gradient(110deg, #ececec 8%, #f5f5f5 18%, #ececec 33%);
+            border-radius: 8px;
+            background-size: 200% 100%;
+            animation: 1.5s shine linear infinite;
+        }
+        @keyframes shine {
+            to { background-position-x: -200%; }
+        }
+
+        /* --- AI 打字机光标 --- */
+        .typing-cursor::after {
+            content: '|';
+            animation: blink 1s step-start infinite;
+        }
+        @keyframes blink {
+            50% { opacity: 0; }
+        }
+
+        /* --- 输入框美化 --- */
+        .search-input-wrapper {
+            position: relative;
+            transition: all 0.3s;
+        }
+        .search-input-wrapper:focus-within {
+            transform: scale(1.01);
+            box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.2);
+        }
+
+        /* --- 模态框动画 --- */
         .modal {
             display: none;
-            animation: fadeIn 0.3s;
+            opacity: 0;
+            transition: opacity 0.3s ease;
         }
         .modal.active {
             display: flex;
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
+            opacity: 1;
         }
         .modal-content {
-            animation: slideUp 0.3s;
+            transform: scale(0.95);
+            transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
         }
-        @keyframes slideUp {
-            from { transform: translateY(50px); opacity: 0; }
-            to { transform: translateY(0); opacity: 1; }
+        .modal.active .modal-content {
+            transform: scale(1);
         }
-        .img-error {
-            display: none;
-        }
-        
-        /* AI 相关样式 */
-        .ai-response-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-radius: 1rem;
-            padding: 2rem;
-            color: white;
-            margin-bottom: 2rem;
-            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
-            animation: slideIn 0.5s ease-out;
-        }
-        @keyframes slideIn {
+        @keyframes fadeIn {
             from {
                 opacity: 0;
-                transform: translateY(-20px);
+                transform: translateY(20px);
             }
             to {
                 opacity: 1;
                 transform: translateY(0);
             }
         }
-        .ai-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            background: rgba(255, 255, 255, 0.2);
-            backdrop-filter: blur(10px);
-            padding: 0.5rem 1rem;
-            border-radius: 2rem;
-            font-weight: 600;
-            margin-bottom: 1rem;
-        }
-        .ai-thinking {
-            display: inline-block;
-            animation: pulse 1.5s ease-in-out infinite;
-        }
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
-        
-        /* 快捷功能按钮 */
-        .quick-action {
-            transition: all 0.3s;
-        }
-        .quick-action:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
-        }
     </style>
 </head>
-<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
-    <div class="container mx-auto px-4 py-8">
-        <!-- 页面标题 -->
-        <h1 class="text-4xl font-bold text-center mb-2 text-indigo-600">🎬 AI 电影智能助手</h1>
-        <p class="text-center text-gray-600 mb-8">智能搜索 · AI 推荐 · 自动展示推荐结果</p>
+<body class="min-h-screen text-slate-800 antialiased">
+    
+    <div class="ambient-bg"></div>
 
-        <!-- 快捷 AI 功能 -->
-        <div class="max-w-4xl mx-auto mb-6">
-            <div class="bg-white rounded-xl shadow-lg p-6">
-                <h3 class="font-bold text-gray-700 mb-4">⚡ 快捷功能</h3>
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <button onclick="askAI('推荐评分最高的 5 部电影')" class="quick-action bg-indigo-50 hover:bg-indigo-100 text-indigo-700 p-4 rounded-lg font-medium">
-                        🏆 Top 5 佳片
-                    </button>
-                    <button onclick="askAI('推荐温馨的电影')" class="quick-action bg-purple-50 hover:bg-purple-100 text-purple-700 p-4 rounded-lg font-medium">
-                        💝 温馨电影
-                    </button>
-                    <button onclick="askAI('推荐科幻片')" class="quick-action bg-blue-50 hover:bg-blue-100 text-blue-700 p-4 rounded-lg font-medium">
-                        🚀 科幻推荐
-                    </button>
-                    <button onclick="askAI('推荐悬疑烧脑的电影')" class="quick-action bg-green-50 hover:bg-green-100 text-green-700 p-4 rounded-lg font-medium">
-                        🧠 烧脑悬疑
-                    </button>
-                </div>
+    <div class="container mx-auto px-4 py-12 relative z-10">
+        
+        <div class="text-center mb-12 space-y-4">
+            <div class="inline-block animate-bounce">
+                <span class="text-5xl">🎬</span>
             </div>
+            <h1 class="text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-white to-slate-300 drop-shadow-md tracking-tight">
+                Movie Insight <span class="text-indigo-400">Pro</span>
+            </h1>
+            <p class="text-slate-300 text-lg max-w-2xl mx-auto font-light">
+                基于向量检索与 AI 语义理解的下一代电影探索平台
+            </p>
         </div>
 
-        <!-- 搜索栏 -->
-        <div class="max-w-2xl mx-auto mb-8">
-            <div class="bg-white rounded-xl shadow-lg p-4">
-                <div class="flex gap-2 mb-4">
-                    <input 
-                        id="searchInput" 
-                        type="text" 
-                        placeholder="搜索电影或向 AI 提问..." 
-                        class="flex-1 px-4 py-3 rounded-lg border-2 border-indigo-200 focus:border-indigo-500 focus:outline-none transition"
-                        onkeypress="if(event.key==='Enter') handleSearch()"
-                    >
+        <div class="max-w-5xl mx-auto mb-10">
+            <div class="glass-panel rounded-2xl p-6 md:p-8">
+                
+                <div class="search-input-wrapper flex flex-col md:flex-row gap-3 mb-6">
+                    <div class="relative flex-1">
+                        <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                            <svg class="w-5 h-5 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                        </div>
+                        <input 
+                            id="searchInput" 
+                            type="text" 
+                            placeholder="试试搜索：'90年代的经典科幻片' 或 '姜文导演的电影'..." 
+                            class="w-full pl-12 pr-4 py-4 rounded-xl border-none bg-slate-100/50 focus:bg-white text-slate-800 placeholder-slate-400 focus:ring-0 text-lg transition shadow-inner font-medium"
+                            onkeypress="if(event.key==='Enter') handleSearch()"
+                        >
+                    </div>
                     <button 
                         onclick="handleSearch()" 
-                        class="bg-indigo-500 text-white px-8 py-3 rounded-lg hover:bg-indigo-600 font-semibold transition"
+                        class="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-xl font-bold text-lg shadow-lg shadow-indigo-500/30 transition transform active:scale-95 flex items-center justify-center gap-2"
                     >
-                        🔍 搜索
+                        <span>✨ 探索</span>
                     </button>
                     <button 
                         onclick="resetSearch()" 
-                        class="bg-gray-200 text-gray-700 px-6 py-3 rounded-lg hover:bg-gray-300 font-semibold transition"
+                        class="bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 px-6 py-3 rounded-xl font-semibold transition flex items-center justify-center gap-2"
                     >
                         🔄 重置
                     </button>
                 </div>
 
-                <!-- 高级筛选 -->
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <select id="sourceFilter" class="px-3 py-2 rounded-lg border border-gray-300 focus:border-indigo-500 focus:outline-none">
-                        <option value="">全部来源</option>
-                        <option value="imdb">IMDB</option>
-                        <option value="douban">豆瓣</option>
-                        <option value="tomatoes">Rotten Tomatoes</option>
-                    </select>
+                <div class="flex flex-wrap gap-3 items-center justify-between border-t border-slate-200/50 pt-5">
+                    <div class="flex flex-wrap gap-3 w-full md:w-auto">
+                        <select id="sourceFilter" class="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-2.5 hover:bg-white transition cursor-pointer">
+                            <option value="">📺 全部来源</option>
+                            <option value="imdb">IMDB</option>
+                            <option value="douban">豆瓣</option>
+                            <option value="tomatoes">烂番茄</option>
+                        </select>
+                        
+                        <input id="yearFilter" type="text" placeholder="年份 (如 2023)" class="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-lg p-2.5 w-32 focus:outline-none focus:border-indigo-500 transition">
+                        
+                        <input id="minRatingFilter" type="number" step="0.1" max="10" placeholder="最低分" class="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-lg p-2.5 w-24 focus:outline-none focus:border-indigo-500 transition">
+                    </div>
                     
-                    <input 
-                        id="yearFilter" 
-                        type="text" 
-                        placeholder="年份 (如: 2008)" 
-                        class="px-3 py-2 rounded-lg border border-gray-300 focus:border-indigo-500 focus:outline-none"
-                    >
-                    
-                    <input 
-                        id="minRatingFilter" 
-                        type="number" 
-                        step="0.1" 
-                        min="0" 
-                        max="10" 
-                        placeholder="最低评分" 
-                        class="px-3 py-2 rounded-lg border border-gray-300 focus:border-indigo-500 focus:outline-none"
-                    >
-                    
-                    <select id="sortBy" class="px-3 py-2 rounded-lg border border-gray-300 focus:border-indigo-500 focus:outline-none">
-                        <option value="rating">按评分排序</option>
-                        <option value="rating_count">按热度排序</option>
-                        <option value="year">按年份排序</option>
-                    </select>
+                    <div class="w-full md:w-auto mt-3 md:mt-0">
+                        <div class="flex items-center gap-2">
+                            <span class="text-sm text-slate-500">排序:</span>
+                            <div class="flex bg-slate-100 rounded-lg p-1">
+                                <button onclick="setSort('rating')" id="btn-rating" class="sort-btn px-3 py-1 rounded-md text-sm font-medium bg-white shadow-sm text-indigo-600 transition">评分</button>
+                                <button onclick="setSort('rating_count')" id="btn-rating_count" class="sort-btn px-3 py-1 rounded-md text-sm font-medium text-slate-500 hover:text-indigo-600 transition">热度</button>
+                                <button onclick="setSort('year')" id="btn-year" class="sort-btn px-3 py-1 rounded-md text-sm font-medium text-slate-500 hover:text-indigo-600 transition">年份</button>
+                            </div>
+                            <input type="hidden" id="sortBy" value="rating">
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- AI 推荐说明区域 -->
-        <div id="aiResponseArea" class="max-w-4xl mx-auto mb-6" style="display: none;">
-            <!-- AI 回复内容将动态插入这里 -->
+        <div class="flex flex-wrap justify-center gap-3 mb-10">
+            <button onclick="quickAsk('Top 10 经典高分电影')" class="px-4 py-2 bg-white/10 backdrop-blur-md border border-white/20 rounded-full text-white text-sm hover:bg-white/20 transition cursor-pointer">🏆 Top 10 经典</button>
+            <button onclick="quickAsk('适合周末看的轻松喜剧')" class="px-4 py-2 bg-white/10 backdrop-blur-md border border-white/20 rounded-full text-white text-sm hover:bg-white/20 transition cursor-pointer">🍿 周末喜剧</button>
+            <button onclick="quickAsk('烧脑反转的悬疑片')" class="px-4 py-2 bg-white/10 backdrop-blur-md border border-white/20 rounded-full text-white text-sm hover:bg-white/20 transition cursor-pointer">🧠 烧脑悬疑</button>
+            <button onclick="quickAsk('视觉效果震撼的科幻片')" class="px-4 py-2 bg-white/10 backdrop-blur-md border border-white/20 rounded-full text-white text-sm hover:bg-white/20 transition cursor-pointer">🚀 硬核科幻</button>
         </div>
 
-        <!-- 结果统计 -->
-        <div id="resultInfo" class="text-center mb-6 text-gray-700 font-medium"></div>
-
-        <!-- 电影列表 -->
-        <div id="movieList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-6 mb-8">
-            <!-- 电影卡片将动态插入这里 -->
-        </div>
-
-        <!-- 分页控件 -->
-        <div id="pagination" class="flex justify-center items-center gap-4 mb-8">
-            <!-- 分页按钮将动态插入这里 -->
-        </div>
-
-        <!-- 加载状态 -->
-       <div id="loading" class="hidden text-center py-12">
-            <div class="inline-block animate-spin rounded-full h-12 w-12 border-4 border-indigo-500 border-t-transparent"></div>
-            <div class="mt-4 text-gray-600 font-medium space-y-1">
-                <p>AI 正在检索向量库...</p>
-                <p class="text-xs text-gray-400">正在生成 1536 维语义特征并匹配 HNSW 索引</p>
+        <div id="aiResponseArea" class="max-w-4xl mx-auto mb-8 hidden">
             </div>
-        </div>
 
-        <!-- 空状态 -->
-        <div id="emptyState" class="hidden text-center py-12">
-            <div class="text-6xl mb-4">🎬</div>
-            <h3 class="text-xl font-semibold text-gray-700 mb-2">未找到相关电影</h3>
-            <p class="text-gray-500">试试调整搜索条件或使用不同的关键词</p>
+        <div id="resultInfo" class="text-center mb-8 h-6 text-slate-300 font-medium tracking-wide"></div>
+
+        <div id="movieList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5 gap-6 xl:gap-8 mb-12 min-h-[400px]">
+            </div>
+
+        <div id="pagination" class="flex justify-center items-center gap-6 mb-12"></div>
+
+        <div id="emptyState" class="hidden text-center py-20">
+            <div class="text-6xl mb-6 opacity-50">🛸</div>
+            <h3 class="text-2xl font-bold text-white mb-2">在这片星系未发现目标</h3>
+            <p class="text-slate-400">请尝试调整您的搜索频率或更换关键词</p>
         </div>
     </div>
 
-    <!-- 电影详情弹窗 -->
-    <div id="movieModal" class="modal fixed inset-0 bg-black bg-opacity-60 z-50 items-center justify-center p-4">
-        <div class="modal-content bg-white rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto">
-            <div class="sticky top-0 bg-white border-b px-6 py-4 flex justify-between items-center z-10">
-                <h2 class="text-2xl font-bold text-gray-800">电影详情</h2>
-                <button onclick="closeModal()" class="text-gray-500 hover:text-gray-700 text-3xl leading-none">&times;</button>
-            </div>
-            <div id="modalBody" class="p-6">
-                <!-- 详情内容将动态插入这里 -->
-            </div>
+    <div id="movieModal" class="modal fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm items-center justify-center p-4">
+        <div class="modal-content bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col relative">
+            <button onclick="closeModal()" class="absolute top-4 right-4 z-10 bg-black/20 hover:bg-black/40 text-white rounded-full p-2 transition">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+            </button>
+            <div id="modalBody" class="overflow-y-auto h-full">
+                </div>
         </div>
     </div>
 
     <script>
         const API_BASE_URL = window.location.origin + '/api';
-        
         let currentPage = 1;
-        let totalPages = 1;
 
         window.onload = () => {
+            // 默认渲染骨架屏，模拟高级感加载
+            renderSkeleton(10);
             fetchMovies();
         };
 
-        // ========== 智能搜索处理 ==========
+        // ========== 交互逻辑 ==========
         
+        function setSort(type) {
+            document.getElementById('sortBy').value = type;
+            // 更新按钮样式
+            document.querySelectorAll('.sort-btn').forEach(btn => {
+                btn.className = 'sort-btn px-3 py-1 rounded-md text-sm font-medium text-slate-500 hover:text-indigo-600 transition';
+                if(btn.id === `btn-${type}`) {
+                    btn.className = 'sort-btn px-3 py-1 rounded-md text-sm font-medium bg-white shadow-sm text-indigo-600 transition';
+                }
+            });
+            handleSearch();
+        }
+
+        function quickAsk(query) {
+            document.getElementById('searchInput').value = query;
+            askAI(query);
+        }
+
         function handleSearch() {
             const query = document.getElementById('searchInput').value.trim();
-            
-            if (!query) {
-                fetchMovies(1);
-                return;
-            }
-
-            // 判断是否为对话式查询（包含问号、"推荐"、"对比"等关键词）
-            const isConversational = /\?|推荐|对比|什么|哪些|怎么样|类似|最好|最新|温馨|感人|搞笑|悬疑|科幻|动作/.test(query);
+            const isConversational = /\?|推荐|对比|什么|哪些|怎么样|类似|最好|最新|温馨|感人|搞笑|悬疑|科幻|动作|Top/.test(query);
             
             if (isConversational) {
-                // 使用 AI 模式
                 askAI(query);
             } else {
-                // 使用普通搜索
                 currentPage = 1;
                 fetchMovies(1);
             }
         }
 
-        // ========== AI 推荐核心功能 ==========
-        
+        function resetSearch() {
+            document.getElementById('searchInput').value = '';
+            document.getElementById('sourceFilter').value = '';
+            document.getElementById('yearFilter').value = '';
+            document.getElementById('minRatingFilter').value = '';
+            setSort('rating'); // 重置排序UI
+            document.getElementById('aiResponseArea').classList.add('hidden');
+            fetchMovies(1);
+        }
+
+        // ========== 核心 API 调用 ==========
+
         async function askAI(question) {
-            showLoading(true);
+            renderSkeleton(5); // AI 思考时显示骨架
             hideAIResponse();
             
             try {
@@ -292,173 +299,43 @@
                 const data = await response.json();
                 
                 if (response.ok && data.status === "success") {
-                    // 显示 AI 的文字推荐说明
-                    displayAIExplanation(data.agent_answer, question);
+                    typewriterEffect(data.agent_answer); // 打字机特效
                     
-                    // 关键：根据 AI 返回的电影标题/ID 去获取并展示电影卡片
                     if (data.movie_titles && data.movie_titles.length > 0) {
-                        // 方案1：AI 返回电影标题列表，前端搜索这些电影
-                        await fetchMoviesByTitles(data.movie_titles);
-                    } else if (data.movie_ids && data.movie_ids.length > 0) {
-                        // 方案2：AI 返回电影 ID 列表，前端直接获取
-                        await fetchMoviesByIds(data.movie_ids);
+                        renderMovies(data.movie_titles, data.movie_titles.length);
+                        document.getElementById('resultInfo').innerHTML = `🤖 AI 精选推荐 · ${data.movie_titles.length} 部影片`;
                     } else {
-                        // 方案3：从 AI 的回复中解析电影名称
-                        const extractedTitles = extractMovieTitlesFromText(data.agent_answer);
-                        if (extractedTitles.length > 0) {
-                            await fetchMoviesByTitles(extractedTitles);
-                        } else {
-                            showNoMoviesFound();
-                        }
+                        showEmpty();
                     }
                     document.getElementById('pagination').innerHTML = '';
                 } else {
-                    showError(data.detail || 'AI 推荐失败');
+                    showError(data.detail || 'AI 暂时离线');
                 }
             } catch (error) {
-                showError(`AI 服务错误: ${error.message}`);
-            } finally {
-                showLoading(false);
+                showError(error.message);
             }
         }
 
-        // 显示 AI 的推荐说明
-        // static/index.html
-
-        function displayAIExplanation(aiAnswer, userQuery) {
-            const aiArea = document.getElementById('aiResponseArea');
-            aiArea.style.display = 'block';
-            
-            // 增强版替换逻辑：处理换行、加粗和列表
-            const formattedAnswer = aiAnswer
-                .replace(/\n/g, '<br>')
-                .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-                .replace(/^\d\.\s/gm, '• '); // 将数字列表转为圆点，视觉更统一
-
-            aiArea.innerHTML = `
-                <div class="ai-response-card bg-white border-l-4 border-indigo-500 p-6 rounded-xl shadow-md mb-6 animate-fade-in">
-                    <div class="flex items-center gap-2 mb-3">
-                        <span class="text-2xl">🤖</span>
-                        <span class="font-bold text-indigo-700">AI 影评专家</span>
-                    </div>
-                    <div class="text-gray-700 text-lg leading-relaxed italic">
-                        ${formattedAnswer}
-                    </div>
-                </div>
-            `;
-        }
-
-        // 从 AI 文本中提取电影名称（正则匹配）
-        function extractMovieTitlesFromText(text) {
-            const titles = [];
-            
-            // 匹配 《电影名》 格式
-            const regex1 = /《([^》]+)》/g;
-            let match;
-            while ((match = regex1.exec(text)) !== null) {
-                titles.push(match[1]);
-            }
-            
-            // 匹配 **电影名** 格式
-            const regex2 = /\*\*([^*]+)\*\*/g;
-            while ((match = regex2.exec(text)) !== null) {
-                const title = match[1].replace(/^《|》$/g, ''); // 去掉可能存在的书名号
-                if (!titles.includes(title)) {
-                    titles.push(title);
-                }
-            }
-            
-            console.log('提取到的电影名称:', titles);
-            return titles;
-        }
-
-        // 根据电影标题列表搜索电影
-        async function fetchMoviesByTitles(titles) {
-            try {
-                const movies = [];
-                
-                // 为每个标题搜索电影
-                for (const title of titles) {
-                    const response = await fetch(`${API_BASE_URL}/movies?q=${encodeURIComponent(title)}&limit=1`);
-                    const data = await response.json();
-                    
-                    if (data.items && data.items.length > 0) {
-                        movies.push(data.items[0]);
-                    }
-                }
-                
-                if (movies.length > 0) {
-                    renderMovies(movies, movies.length);
-                    document.getElementById('resultInfo').innerHTML = 
-                        `<span class="text-indigo-600">🤖 AI 为您推荐了 ${movies.length} 部电影</span>`;
-                } else {
-                    showNoMoviesFound();
-                }
-            } catch (error) {
-                console.error('获取电影失败:', error);
-                showError('获取推荐电影失败');
-            }
-        }
-
-        // 根据电影 ID 列表获取电影
-        async function fetchMoviesByIds(movieIds) {
-            try {
-                const promises = movieIds.map(id => 
-                    fetch(`${API_BASE_URL}/movies/${id}`).then(r => r.json())
-                );
-                const movies = await Promise.all(promises);
-                
-                if (movies.length > 0) {
-                    renderMovies(movies, movies.length);
-                    document.getElementById('resultInfo').innerHTML = 
-                        `<span class="text-indigo-600">🤖 AI 为您推荐了 ${movies.length} 部电影</span>`;
-                } else {
-                    showNoMoviesFound();
-                }
-            } catch (error) {
-                console.error('获取电影详情失败:', error);
-                showError('获取推荐电影失败');
-            }
-        }
-
-        function showNoMoviesFound() {
-            document.getElementById('resultInfo').innerHTML = 
-                `<span class="text-orange-600">⚠️ AI 已回复，但暂未找到对应的电影数据</span>`;
-            document.getElementById('movieList').innerHTML = '';
-        }
-
-        function hideAIResponse() {
-            const aiArea = document.getElementById('aiResponseArea');
-            aiArea.style.display = 'none';
-            aiArea.innerHTML = '';
-        }
-
-        // ========== 普通搜索功能 ==========
-        
         async function fetchMovies(page = 1) {
-            showLoading(true);
+            renderSkeleton(10); // 加载时显示骨架
             hideAIResponse();
             
             const params = new URLSearchParams({
                 page: page,
                 limit: 20,
-                order: 'desc'
             });
 
-            const keyword = document.getElementById('searchInput').value.trim();
-            if (keyword) params.append('q', keyword);
-
+            // 收集参数
+            const q = document.getElementById('searchInput').value.trim();
+            if (q) params.append('q', q);
             const source = document.getElementById('sourceFilter').value;
             if (source) params.append('source', source);
-
             const year = document.getElementById('yearFilter').value.trim();
             if (year) params.append('year', year);
-
             const minRating = document.getElementById('minRatingFilter').value;
             if (minRating) params.append('min_rating', minRating);
-
             const sortBy = document.getElementById('sortBy').value;
-            if (sortBy) params.append('sort_by', sortBy);
+            params.append('sort_by', sortBy); // 确保传给后端
 
             try {
                 const response = await fetch(`${API_BASE_URL}/movies?${params}`);
@@ -466,250 +343,196 @@
                 
                 if (response.ok) {
                     currentPage = data.page;
-                    totalPages = data.total_pages;
-                    
-                    // 如果搜索无结果且有关键词，自动调用 AI
-                    if (data.items.length === 0 && keyword) {
-                        await askAI(keyword);
+                    if (data.items.length === 0 && q) {
+                        await askAI(q); // 自动降级为 AI
                     } else {
                         renderMovies(data.items, data.total);
                         renderPagination(data);
                     }
                 } else {
-                    showError(data.detail || '查询失败');
+                    showError('请求失败');
                 }
             } catch (error) {
-                showError(`网络错误: ${error.message}`);
-            } finally {
-                showLoading(false);
+                showError(error.message);
             }
         }
 
-        function resetSearch() {
-            document.getElementById('searchInput').value = '';
-            document.getElementById('sourceFilter').value = '';
-            document.getElementById('yearFilter').value = '';
-            document.getElementById('minRatingFilter').value = '';
-            document.getElementById('sortBy').value = 'rating';
-            currentPage = 1;
-            hideAIResponse();
-            fetchMovies(1);
-        }
+        // ========== 渲染逻辑 ==========
 
-        // ========== 电影渲染 ==========
-        
-        function handleImageError(img) {
-            img.style.display = 'none';
-            img.nextElementSibling.style.display = 'flex';
+        function renderSkeleton(count) {
+            const list = document.getElementById('movieList');
+            list.classList.remove('hidden');
+            document.getElementById('emptyState').classList.add('hidden');
+            
+            let html = '';
+            for(let i=0; i<count; i++) {
+                html += `
+                    <div class="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100">
+                        <div class="skeleton h-[300px] w-full"></div>
+                        <div class="p-4 space-y-3">
+                            <div class="skeleton h-6 w-3/4 rounded"></div>
+                            <div class="flex gap-2">
+                                <div class="skeleton h-4 w-12 rounded"></div>
+                                <div class="skeleton h-4 w-12 rounded"></div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            list.innerHTML = html;
         }
 
         function renderMovies(movies, total) {
             const list = document.getElementById('movieList');
-            const emptyState = document.getElementById('emptyState');
-            const resultInfo = document.getElementById('resultInfo');
-            
             if (!movies || movies.length === 0) {
-                list.innerHTML = '';
-                list.classList.add('hidden');
-                emptyState.classList.remove('hidden');
-                if (!resultInfo.innerHTML.includes('AI')) {
-                    resultInfo.innerHTML = '';
-                }
+                showEmpty();
                 return;
             }
 
-            list.classList.remove('hidden');
-            emptyState.classList.add('hidden');
-            
-            if (!resultInfo.innerHTML.includes('AI')) {
-                resultInfo.innerHTML = `找到 <strong class="text-indigo-600">${total}</strong> 部电影`;
+            if (!document.getElementById('resultInfo').innerHTML.includes('AI')) {
+                document.getElementById('resultInfo').innerHTML = `✨ 发现 ${total} 部相关影片`;
             }
 
-            list.innerHTML = movies.map(movie => `
-                <div class="movie-card bg-white rounded-xl shadow-lg overflow-hidden" onclick="showMovieDetail(${movie.id})">
-                    ${movie.cover_url ? `
-                    <div class="relative">
-                        <img 
-                            src="${movie.cover_url}" 
-                            alt="${movie.title}"
-                            class="movie-cover"
-                            onerror="handleImageError(this)"
-                        >
-                        <div class="movie-cover-placeholder img-error">🎬</div>
-                        <div class="absolute top-2 right-2">
-                            <span class="rating-badge text-white px-3 py-1 rounded-full font-bold text-sm shadow-lg">
-                                ⭐ ${movie.rating || 'N/A'}
-                            </span>
-                        </div>
-                        <div class="absolute top-2 left-2">
-                            <span class="text-xs font-bold px-3 py-1 bg-white bg-opacity-90 text-indigo-700 rounded-full backdrop-blur">
-                                ${movie.source ? movie.source.toUpperCase() : 'N/A'}
-                            </span>
-                        </div>
-                    </div>
-                    ` : `
-                    <div class="relative">
-                        <div class="movie-cover-placeholder">🎬</div>
-                        <div class="absolute top-2 right-2">
-                            <span class="rating-badge text-white px-3 py-1 rounded-full font-bold text-sm shadow-lg">
-                                ⭐ ${movie.rating || 'N/A'}
-                            </span>
-                        </div>
-                        <div class="absolute top-2 left-2">
-                            <span class="text-xs font-bold px-3 py-1 bg-white bg-opacity-90 text-indigo-700 rounded-full backdrop-blur">
-                                ${movie.source ? movie.source.toUpperCase() : 'N/A'}
-                            </span>
-                        </div>
-                    </div>
-                    `}
+            list.innerHTML = movies.map((movie, index) => `
+                <div class="glass-card rounded-2xl overflow-hidden cursor-pointer flex flex-col h-full opacity-0 animate-[fadeIn_0.5s_ease-out_forwards]" 
+                     style="animation-delay: ${index * 0.05}s"
+                     onclick="showMovieDetail(${movie.id})">
                     
-                    <div class="p-4">
-                        <h3 class="text-lg font-bold text-gray-800 mb-2 line-clamp-2 min-h-[3.5rem]">
+                    <div class="relative aspect-[2/3] overflow-hidden group">
+                        <img 
+                            src="${movie.cover_url || ''}" 
+                            class="w-full h-full object-cover transition duration-700 group-hover:scale-110"
+                            onerror="this.src='https://placehold.co/400x600/e2e8f0/94a3b8?text=No+Image'"
+                        >
+                        <div class="absolute top-2 right-2">
+                            <div class="bg-white/90 backdrop-blur text-indigo-700 text-xs font-bold px-2 py-1 rounded-lg shadow-sm">
+                                ${movie.rating ? `⭐ ${movie.rating}` : '暂无评分'}
+                            </div>
+                        </div>
+                        <div class="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition duration-300 flex items-end p-4">
+                            <span class="text-white font-medium text-sm">查看详情 →</span>
+                        </div>
+                    </div>
+                    
+                    <div class="p-5 flex-1 flex flex-col">
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-indigo-50 text-indigo-600 border border-indigo-100">
+                                ${movie.source || 'WEB'}
+                            </span>
+                            <span class="text-slate-400 text-xs">${movie.year || ''}</span>
+                        </div>
+                        
+                        <h3 class="font-bold text-slate-800 text-lg leading-tight mb-2 line-clamp-2" title="${movie.title}">
                             ${movie.title}
                         </h3>
-                        <div class="space-y-2 text-sm">
-                            <p class="text-gray-600">
-                                📅 <span class="font-medium">${movie.year || '未知年份'}</span>
-                            </p>
-                            ${movie.rating_count ? `
-                            <p class="text-gray-600">
-                                🔥 <span class="font-medium">${movie.rating_count.toLocaleString()} 人评分</span>
-                            </p>
-                            ` : ''}
-                            ${movie.director ? `
-                            <p class="text-gray-600 line-clamp-1">
-                                🎬 <span class="font-medium">${movie.director}</span>
-                            </p>
-                            ` : ''}
+                        
+                        <div class="mt-auto pt-3 border-t border-slate-100 text-xs text-slate-500 flex justify-between items-center">
+                            <span>${movie.director ? movie.director.split('/')[0] : '未知导演'}</span>
                         </div>
-                    </div>
-                    
-                    <div class="px-4 pb-4">
-                        <button 
-                            onclick="event.stopPropagation(); window.open('${movie.url || '#'}', '_blank')"
-                            class="w-full bg-indigo-500 hover:bg-indigo-600 text-white py-2 rounded-lg font-medium transition ${!movie.url ? 'opacity-50 cursor-not-allowed' : ''}"
-                            ${!movie.url ? 'disabled' : ''}
-                        >
-                            ${movie.url ? '🔗 访问源网站' : '暂无链接'}
-                        </button>
                     </div>
                 </div>
             `).join('');
         }
 
+        // AI 打字机特效
+        function typewriterEffect(text) {
+            const container = document.getElementById('aiResponseArea');
+            container.classList.remove('hidden');
+            container.innerHTML = `
+                <div class="bg-white/90 backdrop-blur-xl border border-indigo-100 rounded-2xl p-6 shadow-xl relative overflow-hidden">
+                    <div class="absolute top-0 left-0 w-1 h-full bg-indigo-500"></div>
+                    <div class="flex gap-3 mb-4">
+                        <div class="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-xl">🤖</div>
+                        <div>
+                            <h4 class="font-bold text-slate-800">AI 影评专家</h4>
+                            <p class="text-xs text-slate-500">基于语义理解分析</p>
+                        </div>
+                    </div>
+                    <div class="prose prose-indigo max-w-none text-slate-700 leading-relaxed" id="aiTextOutput"></div>
+                </div>
+            `;
+            
+            const output = document.getElementById('aiTextOutput');
+            const cleanText = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // 预处理加粗
+            
+            // 简单模拟打字，如果是 HTML 结构太复杂建议直接显示
+            // 这里为了效果我们快速显示内容
+            output.innerHTML = cleanText;
+            output.classList.add('animate-[fadeIn_1s_ease]');
+        }
+
         function renderPagination(data) {
             const pagination = document.getElementById('pagination');
-            
-            // 如果总页数小于等于1，清空分页控件
             if (data.total_pages <= 1) {
                 pagination.innerHTML = '';
                 return;
             }
-
+            
             pagination.innerHTML = `
-                <button 
-                    onclick="fetchMovies(${data.page - 1})" 
-                    class="pagination-btn px-6 py-3 bg-white rounded-lg shadow hover:shadow-md transition font-medium ${data.page <= 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-50'}"
-                    ${data.page <= 1 ? 'disabled' : ''}
-                >
-                    ⬅️ 上一页
+                <button onclick="fetchMovies(${data.page - 1})" ${data.page <= 1 ? 'disabled' : ''} class="w-10 h-10 rounded-full bg-white text-slate-600 hover:bg-indigo-600 hover:text-white shadow transition flex items-center justify-center disabled:opacity-50 disabled:hover:bg-white disabled:hover:text-slate-600">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
                 </button>
-                
-                <div class="px-6 py-3 bg-white rounded-lg shadow font-medium">
-                    第 <span class="text-indigo-600 font-bold">${data.page}</span> / 
-                    <span class="text-gray-600">${data.total_pages}</span> 页
-                </div>
-                
-                <button 
-                    onclick="fetchMovies(${data.page + 1})" 
-                    class="pagination-btn px-6 py-3 bg-indigo-500 text-white rounded-lg shadow hover:shadow-md transition font-medium ${data.page >= data.total_pages ? 'opacity-50 cursor-not-allowed' : 'hover:bg-indigo-600'}"
-                    ${data.page >= data.total_pages ? 'disabled' : ''}
-                >
-                    下一页 ➡️
+                <span class="px-4 font-medium text-slate-400">Page ${data.page} / ${data.total_pages}</span>
+                <button onclick="fetchMovies(${data.page + 1})" ${data.page >= data.total_pages ? 'disabled' : ''} class="w-10 h-10 rounded-full bg-white text-slate-600 hover:bg-indigo-600 hover:text-white shadow transition flex items-center justify-center disabled:opacity-50 disabled:hover:bg-white disabled:hover:text-slate-600">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
                 </button>
             `;
         }
 
+        // 详情弹窗
         async function showMovieDetail(movieId) {
             const modal = document.getElementById('movieModal');
-            const modalBody = document.getElementById('modalBody');
-            
-            modalBody.innerHTML = '<div class="text-center py-8"><div class="inline-block animate-spin rounded-full h-8 w-8 border-4 border-indigo-500 border-t-transparent"></div></div>';
+            const body = document.getElementById('modalBody');
             modal.classList.add('active');
+            body.innerHTML = `
+                <div class="h-96 w-full bg-slate-100 animate-pulse"></div>
+            `; // 弹窗骨架
 
             try {
-                const response = await fetch(`${API_BASE_URL}/movies/${movieId}`);
-                const movie = await response.json();
-
-                if (response.ok) {
-                    modalBody.innerHTML = `
-                        <div class="space-y-6">
-                            ${movie.cover_url ? `
-                            <div class="w-full flex justify-center">
-                                <img 
-                                    src="${movie.cover_url}" 
-                                    alt="${movie.title}"
-                                    class="rounded-xl shadow-lg max-h-96 object-cover"
-                                    onerror="this.style.display='none'"
-                                >
-                            </div>
-                            ` : ''}
-                            
-                            <div>
-                                <h3 class="text-3xl font-bold text-gray-800 mb-3">${movie.title}</h3>
-                                <div class="flex flex-wrap gap-3">
-                                    ${movie.rating ? `<span class="rating-badge text-white px-4 py-2 rounded-full font-bold text-lg">⭐ ${movie.rating}</span>` : ''}
-                                    ${movie.year ? `<span class="bg-gray-200 text-gray-700 px-4 py-2 rounded-full font-medium">📅 ${movie.year}</span>` : ''}
-                                    ${movie.source ? `<span class="bg-indigo-100 text-indigo-700 px-4 py-2 rounded-full font-medium">📱 ${movie.source.toUpperCase()}</span>` : ''}
+                const res = await fetch(`${API_BASE_URL}/movies/${movieId}`);
+                const movie = await res.json();
+                
+                body.innerHTML = `
+                    <div class="flex flex-col md:flex-row h-full">
+                        <div class="w-full md:w-2/5 h-64 md:h-auto bg-slate-200 relative">
+                            <img src="${movie.cover_url}" class="w-full h-full object-cover absolute inset-0" onerror="this.parentElement.innerHTML='<div class=\\'flex items-center justify-center h-full text-slate-400\\'>暂无封面</div>'">
+                            <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent md:hidden"></div>
+                        </div>
+                        <div class="flex-1 p-8 bg-white overflow-y-auto">
+                            <div class="flex items-start justify-between mb-4">
+                                <div>
+                                    <h2 class="text-3xl font-bold text-slate-900 mb-2">${movie.title}</h2>
+                                    <div class="flex flex-wrap gap-2 text-sm">
+                                        <span class="px-2 py-1 bg-indigo-100 text-indigo-700 rounded font-semibold">${movie.year}</span>
+                                        <span class="px-2 py-1 bg-slate-100 text-slate-600 rounded">${movie.source.toUpperCase()}</span>
+                                    </div>
                                 </div>
-                                ${movie.rating_count ? `<p class="mt-2 text-gray-600">🔥 <strong>${movie.rating_count.toLocaleString()}</strong> 人评分</p>` : ''}
+                                ${movie.rating ? `<div class="bg-indigo-600 text-white px-4 py-3 rounded-xl text-center shadow-lg"><div class="text-2xl font-bold">${movie.rating}</div><div class="text-xs opacity-80">评分</div></div>` : ''}
                             </div>
+                            
+                            <div class="space-y-6">
+                                ${movie.summary ? `<p class="text-slate-600 leading-relaxed text-lg">${movie.summary}</p>` : '<p class="text-slate-400 italic">暂无剧情简介...</p>'}
+                                
+                                <div class="grid grid-cols-2 gap-4 text-sm border-t pt-6">
+                                    <div>
+                                        <span class="block text-slate-400 mb-1">导演</span>
+                                        <span class="font-medium text-slate-800">${movie.director || '未知'}</span>
+                                    </div>
+                                    <div>
+                                        <span class="block text-slate-400 mb-1">主演</span>
+                                        <span class="font-medium text-slate-800 truncate block" title="${movie.stars}">${movie.stars || '未知'}</span>
+                                    </div>
+                                </div>
 
-                            ${movie.director ? `
-                            <div class="bg-gray-50 p-4 rounded-lg">
-                                <h4 class="font-bold text-gray-700 mb-2">🎬 导演</h4>
-                                <p class="text-gray-600">${movie.director}</p>
-                            </div>
-                            ` : ''}
-
-                            ${movie.stars ? `
-                            <div class="bg-gray-50 p-4 rounded-lg">
-                                <h4 class="font-bold text-gray-700 mb-2">🌟 主演</h4>
-                                <p class="text-gray-600">${movie.stars}</p>
-                            </div>
-                            ` : ''}
-
-                            ${movie.summary ? `
-                            <div class="bg-gray-50 p-4 rounded-lg">
-                                <h4 class="font-bold text-gray-700 mb-2">📝 剧情简介</h4>
-                                <p class="text-gray-600 leading-relaxed">${movie.summary}</p>
-                            </div>
-                            ` : ''}
-
-                            ${movie.url ? `
-                            <div class="flex gap-3">
-                                <a 
-                                    href="${movie.url}" 
-                                    target="_blank"
-                                    class="flex-1 bg-indigo-500 hover:bg-indigo-600 text-white text-center py-3 rounded-lg font-semibold transition"
-                                >
-                                    🔗 访问 ${movie.source ? movie.source.toUpperCase() : ''} 查看更多
+                                <a href="${movie.url || '#'}" target="_blank" class="block w-full text-center bg-slate-900 hover:bg-indigo-600 text-white py-4 rounded-xl font-bold transition shadow-lg transform active:scale-95">
+                                    🔗 前往源网站查看完整信息
                                 </a>
                             </div>
-                            ` : ''}
-
-                            ${movie.created_at ? `
-                            <div class="text-center text-sm text-gray-500 pt-4 border-t">
-                                数据创建时间: ${new Date(movie.created_at).toLocaleString('zh-CN')}
-                            </div>
-                            ` : ''}
                         </div>
-                    `;
-                } else {
-                    modalBody.innerHTML = `<div class="text-center py-8 text-red-600">❌ ${movie.detail || '加载失败'}</div>`;
-                }
-            } catch (error) {
-                modalBody.innerHTML = `<div class="text-center py-8 text-red-600">❌ 网络错误: ${error.message}</div>`;
+                    </div>
+                `;
+            } catch (e) {
+                body.innerHTML = `<div class="p-8 text-center text-red-500">加载失败</div>`;
             }
         }
 
@@ -717,37 +540,16 @@
             document.getElementById('movieModal').classList.remove('active');
         }
 
-        document.getElementById('movieModal').addEventListener('click', function(event) {
-            if (event.target === this) {
-                closeModal();
-            }
-        });
-
-        document.addEventListener('keydown', function(event) {
-            if (event.key === 'Escape') {
-                closeModal();
-            }
-        });
-
-        function showLoading(show) {
-            const loading = document.getElementById('loading');
-            const movieList = document.getElementById('movieList');
-            const pagination = document.getElementById('pagination');
-            
-            if (show) {
-                loading.classList.remove('hidden');
-                movieList.classList.add('hidden');
-                pagination.innerHTML = '';
-            } else {
-                loading.classList.add('hidden');
-            }
+        function hideAIResponse() {
+            document.getElementById('aiResponseArea').classList.add('hidden');
         }
-
-        function showError(message) {
-            const resultInfo = document.getElementById('resultInfo');
-            resultInfo.innerHTML = `<span class="text-red-600">❌ ${message}</span>`;
+        function showEmpty() {
             document.getElementById('movieList').innerHTML = '';
             document.getElementById('emptyState').classList.remove('hidden');
+        }
+        function showError(msg) {
+            document.getElementById('resultInfo').innerHTML = `<span class="text-red-400">❌ ${msg}</span>`;
+            document.getElementById('movieList').innerHTML = '';
         }
     </script>
 </body>
