@@ -121,7 +121,7 @@
         }
     </style>
 </head>
-<body class="min-h-screen text-slate-800 antialiased">
+<body class="min-h-screen text-slate-800 antialiased" data-api-base="/api">
     
     <div class="ambient-bg"></div>
 
@@ -233,7 +233,10 @@
     </div>
 
     <script>
-        const API_BASE_URL = window.location.origin + '/api';
+        const apiBasePath = (document.body.dataset.apiBase || '/api').replace(/\/$/, '');
+        const API_BASE_URL = apiBasePath.startsWith('http')
+            ? apiBasePath
+            : window.location.origin + apiBasePath;
         let currentPage = 1;
 
         window.onload = () => {
@@ -333,7 +336,7 @@
             const year = document.getElementById('yearFilter').value.trim();
             if (year) params.append('year', year);
             const minRating = document.getElementById('minRatingFilter').value;
-            if (minRating) params.append('min_rating', minRating);
+            if (minRating !== '' && minRating !== null) params.append('min_rating', minRating);
             const sortBy = document.getElementById('sortBy').value;
             params.append('sort_by', sortBy); // 确保传给后端
 
@@ -350,7 +353,7 @@
                         renderPagination(data);
                     }
                 } else {
-                    showError('请求失败');
+                    showError(data.detail || '请求失败');
                 }
             } catch (error) {
                 showError(error.message);
@@ -495,7 +498,7 @@
                 body.innerHTML = `
                     <div class="flex flex-col md:flex-row h-full">
                         <div class="w-full md:w-2/5 h-64 md:h-auto bg-slate-200 relative">
-                            <img src="${movie.cover_url}" class="w-full h-full object-cover absolute inset-0" onerror="this.parentElement.innerHTML='<div class=\\'flex items-center justify-center h-full text-slate-400\\'>暂无封面</div>'">
+                            <img src="${movie.cover_url || ''}" class="w-full h-full object-cover absolute inset-0" onerror="this.parentElement.innerHTML='<div class=\\'flex items-center justify-center h-full text-slate-400\\'>暂无封面</div>'">
                             <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent md:hidden"></div>
                         </div>
                         <div class="flex-1 p-8 bg-white overflow-y-auto">
@@ -504,7 +507,7 @@
                                     <h2 class="text-3xl font-bold text-slate-900 mb-2">${movie.title}</h2>
                                     <div class="flex flex-wrap gap-2 text-sm">
                                         <span class="px-2 py-1 bg-indigo-100 text-indigo-700 rounded font-semibold">${movie.year}</span>
-                                        <span class="px-2 py-1 bg-slate-100 text-slate-600 rounded">${movie.source.toUpperCase()}</span>
+                                        <span class="px-2 py-1 bg-slate-100 text-slate-600 rounded">${movie.source ? movie.source.toUpperCase() : '未知来源'}</span>
                                     </div>
                                 </div>
                                 ${movie.rating ? `<div class="bg-indigo-600 text-white px-4 py-3 rounded-xl text-center shadow-lg"><div class="text-2xl font-bold">${movie.rating}</div><div class="text-xs opacity-80">评分</div></div>` : ''}
@@ -523,10 +526,15 @@
                                         <span class="font-medium text-slate-800 truncate block" title="${movie.stars}">${movie.stars || '未知'}</span>
                                     </div>
                                 </div>
-
-                                <a href="${movie.url || '#'}" target="_blank" class="block w-full text-center bg-slate-900 hover:bg-indigo-600 text-white py-4 rounded-xl font-bold transition shadow-lg transform active:scale-95">
-                                    🔗 前往源网站查看完整信息
-                                </a>
+                                ${movie.url ? `
+                                    <a href="${movie.url}" target="_blank" rel="noopener noreferrer" class="block w-full text-center bg-slate-900 hover:bg-indigo-600 text-white py-4 rounded-xl font-bold transition shadow-lg transform active:scale-95">
+                                        🔗 前往源网站查看完整信息
+                                    </a>
+                                ` : `
+                                    <div class="block w-full text-center bg-slate-200 text-slate-500 py-4 rounded-xl font-bold">
+                                        暂无来源链接
+                                    </div>
+                                `}
                             </div>
                         </div>
                     </div>

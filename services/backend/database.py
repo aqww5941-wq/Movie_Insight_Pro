@@ -1,25 +1,42 @@
+"""
+数据库连接管理模块
+提供异步数据库连接和会话管理
+"""
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-import os
+from config import get_settings
+import logging
 
-# 构建 Postgres 连接字符串 (注意驱动是 asyncpg)
-PG_USER = os.getenv("PG_USER", "root")
-PG_PASSWORD = os.getenv("PG_PASSWORD", "000000")
-PG_HOST = os.getenv("PG_HOST", "db")
-PG_PORT = os.getenv("PG_PORT", "5432")
-PG_DB = os.getenv("PG_DBNAME", "movie_db")
-
-DATABASE_URL = f"postgresql+asyncpg://{PG_USER}:{PG_PASSWORD}@{PG_HOST}:{PG_PORT}/{PG_DB}"
+logger = logging.getLogger(__name__)
+settings = get_settings()
 
 # 创建异步引擎
-engine = create_async_engine(DATABASE_URL, echo=False)
+engine = create_async_engine(
+    settings.database_url,
+    echo=settings.debug,
+    pool_pre_ping=True,  # 连接前检查
+    pool_size=10,         # 连接池大小
+    max_overflow=20,      # 最大溢出连接数
+    pool_recycle=3600,    # 连接回收时间（秒）
+)
 
 # 创建 Session 工厂
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
-    expire_on_commit=False
+    expire_on_commit=False,
+    autoflush=False,
+    autocommit=False
 )
 
+
 async def get_db():
+    """获取数据库会话（依赖注入）"""
     async with AsyncSessionLocal() as session:
-        yield session
+        try:
+            yield session
+        except Exception as e:
+            logger.error(f"数据库会话错误: {e}")
+            await session.rollback()
+            raise
+        finally:
+            await session.close()

@@ -1,8 +1,8 @@
 services:
   rabbitmq:
-    image: rabbitmq:3.12-management
+    image: rabbitmq:3.13-management  # 升级到最新稳定版
     container_name: movie-rabbitmq
-    restart: always
+    restart: unless-stopped  # 更安全的重启策略
     environment:
       - TZ=Asia/Shanghai
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_USERNAME:-guest}
@@ -12,36 +12,55 @@ services:
       - "15672:15672"
     volumes:
       - ./rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - movie-network
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
 
   db:
-    image: pgvector/pgvector:pg15
+    image: pgvector/pgvector:pg16  # 升级到 PostgreSQL 16
     container_name: movie-postgres
-    restart: always
+    restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
       - POSTGRES_USER=${PG_USER:-root}
       - POSTGRES_PASSWORD=${PG_PASSWORD:-000000}
       - POSTGRES_DB=${PG_DBNAME:-movie_db}
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --locale=C.UTF-8
     ports:
       - "5432:5432"
     volumes:
       - ./pg_data:/var/lib/postgresql/data
       - ./db/init_sql:/docker-entrypoint-initdb.d
+    networks:
+      - movie-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-root} -d ${PG_DBNAME:-movie_db}"]
       interval: 5s
       timeout: 5s
       retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
 
   collector:
     build:
       context: ./services/collector
+      dockerfile: Dockerfile
     container_name: scrapy_collector
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
@@ -60,13 +79,22 @@ services:
     volumes:
       - ./services/collector:/app
       - ./data:/app/data
+    networks:
+      - movie-network
     tty: true
     stdin_open: true
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
 
   consumer:
     build:
       context: ./services/collector
+      dockerfile: Dockerfile
     container_name: rabbitmq_consumer
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
@@ -86,11 +114,21 @@ services:
     volumes:
       - ./services/collector:/app
       - ./data:/app/data
+    networks:
+      - movie-network
     command: python rabbitmq_consumer.py
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
 
   backend:
-    build: ./services/backend
+    build: 
+      context: ./services/backend
+      dockerfile: Dockerfile
     container_name: movie-api
+    restart: unless-stopped
     expose:
       - "8000"
     environment:
@@ -101,28 +139,82 @@ services:
       - PG_PASSWORD=${PG_PASSWORD}
       - PG_DBNAME=${PG_DBNAME}
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
     volumes:
       - ./services/backend:/app
       - ./services/collector/utils:/app/utils
+    networks:
+      - movie-network
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
 
   nginx:
-    image: nginx:alpine
+    image: nginx:1.25-alpine  # 指定版本
     container_name: movie-nginx
+    restart: unless-stopped
     ports:
-      - "80:80"  # 宿主机的 80 端口指向 Nginx
+      - "80:80"
+      - "443:443"  # 为未来的 HTTPS 准备
     volumes:
       - ./services/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./services/nginx/html:/usr/share/nginx/html:ro  # 挂载前端代码
+      - ./services/nginx/html:/usr/share/nginx/html:ro
+    networks:
+      - movie-network
     depends_on:
       - backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     
   redis:
-    image: redis:7-alpine
+    image: redis:7.2-alpine  # 指定版本
     container_name: movie-redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
-    restart: always
+    networks:
+      - movie-network
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - ./redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+networks:
+  movie-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
+
 

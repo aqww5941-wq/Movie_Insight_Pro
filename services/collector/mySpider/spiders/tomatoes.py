@@ -23,8 +23,13 @@ class TomatoesSpider(scrapy.Spider):
                 meta={
                     "playwright": True,
                     "playwright_include_page": True, # 必须保留 Page 对象
+                    "playwright_page_goto_kwargs": {
+                        "wait_until": "domcontentloaded",
+                        "timeout": 60000
+                    },
+                    "download_timeout": 60,
                     "playwright_page_methods": [
-                        PageMethod("wait_for_selector", "main"),
+                        PageMethod("wait_for_selector", "main", timeout=15000),
                     ],
                 },
                 callback=self.parse
@@ -93,6 +98,11 @@ class TomatoesSpider(scrapy.Spider):
                             meta={
                                 "original_title": item['title'],
                                 "playwright": True, # 详情页依然用 Playwright
+                                "playwright_page_goto_kwargs": {
+                                    "wait_until": "domcontentloaded",
+                                    "timeout": 60000
+                                },
+                                "download_timeout": 60,
                                 "playwright_page_methods": [
                                      # 详情页只需等文字出来
                                     PageMethod("wait_for_selector", 'rt-text[slot="content"]', timeout=10000),

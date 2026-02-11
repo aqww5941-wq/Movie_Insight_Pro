@@ -1,26 +1,26 @@
 # 基础爬虫框架
-Scrapy==2.11.1
-scrapy-playwright==0.0.44
-playwright==1.57.0
-python-dotenv
+Scrapy==2.12.0
+scrapy-playwright==0.0.46
+playwright==1.49.1
+python-dotenv==1.0.1
 
-# 数据库连接 (已切换为 PostgreSQL ORM)
-sqlalchemy>=2.0.0
-psycopg2-binary
-pgvector==0.2.4
+# 数据库连接 (PostgreSQL ORM)
+sqlalchemy>=2.0.36
+psycopg2-binary==2.9.10
+pgvector==0.3.6
 
 # Scrapy 异步相关
-Twisted==25.5.0
-cryptography==44.0.3
+Twisted==24.11.0
+cryptography==44.0.0
 
 # 工具类
-beautifulsoup4==4.14.3
-lxml==6.0.2
+beautifulsoup4==4.12.3
+lxml==5.3.0
 python-dateutil==2.9.0.post0
 
-# RabbitMQ 客户端依赖
+# RabbitMQ 客户端
 pika>=1.3.2
-tenacity>=8.2.3
+tenacity>=9.0.0
 
-# 千问
-dashscope
+# AI 服务
+dashscope>=1.20.9

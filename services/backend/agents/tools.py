@@ -45,42 +45,51 @@ def semantic_movie_search(query: str) -> str:
     """
     print(f"🚀 [DEBUG] 向量检索被触发！查询内容: {query}") # 调试
     try:
-        # 1. 将用户的提问转化为 1536 维向量
         query_vector = AIAgent.generate_embedding(query)
-        if not query_vector:
-            return "无法通过 AI 生成向量，请检查 API 配置。"
-
-        # 2. 连接数据库进行向量检索
         conn = psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
+
         with conn.cursor() as cursor:
-            # 使用 <=> (余弦距离) 算子。距离越小相似度越高。
-            # 1 - (embedding <=> query_vector) 即为相似度
-            sql = """
-            SELECT title, year, rating, summary, 
-                   (1 - (embedding <=> %s::vector)) AS similarity
-            FROM movies
-            WHERE embedding IS NOT NULL
-            ORDER BY embedding <=> %s::vector
-            LIMIT 5;
-            """
-            # 注意：psycopg2 传入列表时，需要转为字符串格式让 pgvector 识别
-            vector_str = "[" + ",".join(map(str, query_vector)) + "]"
-            
-            cursor.execute(sql, (vector_str, vector_str))
+            if query_vector:
+                vector_str = "[" + ",".join(map(str, query_vector)) + "]"
+                sql = """
+                WITH scored AS (
+                    SELECT title, year, rating, summary,
+                           similarity(coalesce(title, '') || ' ' || coalesce(summary, ''), %s) AS trgm_score,
+                           (1 - (embedding <=> %s::vector)) AS vec_score
+                    FROM movies
+                    WHERE embedding IS NOT NULL
+                )
+                SELECT title, year, rating, summary,
+                       (0.6 * vec_score + 0.4 * trgm_score) AS hybrid_score
+                FROM scored
+                ORDER BY hybrid_score DESC
+                LIMIT 5;
+                """
+                cursor.execute(sql, (query, vector_str))
+            else:
+                sql = """
+                SELECT title, year, rating, summary,
+                       similarity(coalesce(title, '') || ' ' || coalesce(summary, ''), %s) AS hybrid_score
+                FROM movies
+                WHERE (coalesce(title, '') || ' ' || coalesce(summary, '')) % %s
+                ORDER BY hybrid_score DESC
+                LIMIT 5;
+                """
+                cursor.execute(sql, (query, query))
+
             results = cursor.fetchall()
-            
+
             if not results:
                 return "在数据库中未找到语义匹配的电影。"
 
-            # 格式化输出给 AI
             formatted_res = []
             for r in results:
                 formatted_res.append(
                     f"电影:《{r['title']}》({r['year']})\n"
-                    f"评分: {r['rating']} | 相似度: {round(r['similarity'], 3)}\n"
+                    f"评分: {r['rating']} | 相似度: {round(r['hybrid_score'], 3)}\n"
                     f"简介: {r['summary'][:100]}...\n"
                 )
-            
+
             return "\n".join(formatted_res)
 
     except Exception as e:

@@ -2,7 +2,7 @@
 mysql_data/
 rabbitmq_data/
 pg_data/
-
+redis_data/
 # 敏感配置文件
 .env
 

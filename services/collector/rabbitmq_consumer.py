@@ -15,7 +15,7 @@ import pika
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # SQLAlchemy 导入
-from sqlalchemy import create_engine, Column, Integer, String, Float, Text, DateTime, func
+from sqlalchemy import create_engine, Column, Integer, String, Float, Text, DateTime, func, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -58,12 +58,12 @@ class PgDatabaseManager:
         
         # 自动建表 (如果表不存在)
         try:
-            Base.metadata.create_all(self.engine)
-            logger.info("✅ 数据库表结构校验完成")
+            with self.engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            logger.info("✅ 数据库连接校验完成，准备接收数据...")
         except Exception as e:
-            logger.error(f"❌ 无法创建表结构: {e}")
-            sys.exit(1)
-
+            logger.error(f"❌ 数据库连接失败，消费者无法启动: {e}")
+           
     def upsert_movie(self, movie_data):
         """
         执行 Postgres 特有的 Upsert (Insert on Conflict Update)

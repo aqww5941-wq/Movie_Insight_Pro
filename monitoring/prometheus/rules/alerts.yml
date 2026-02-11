@@ -1,0 +1,76 @@
+# ==========================================
+# Prometheus 告警规则
+# ==========================================
+groups:
+  - name: movie_insight_alerts
+    interval: 30s
+    rules:
+      # API 服务健康检查
+      - alert: APIServiceDown
+        expr: up{job="backend-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "后端 API 服务宕机"
+          description: "{{ $labels.instance }} 已宕机超过 1 分钟"
+
+      # 数据库健康检查
+      - alert: DatabaseDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL 数据库不可用"
+          description: "数据库连接失败超过 1 分钟"
+
+      # Redis 健康检查
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis 缓存服务不可用"
+          description: "Redis 连接失败超过 1 分钟"
+
+      # 高内存使用率
+      - alert: HighMemoryUsage
+        expr: (container_memory_usage_bytes / container_spec_memory_limit_bytes) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "容器内存使用率过高"
+          description: "{{ $labels.name }} 内存使用率超过 80%"
+
+      # 高 CPU 使用率
+      - alert: HighCPUUsage
+        expr: rate(container_cpu_usage_seconds_total[5m]) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "容器 CPU 使用率过高"
+          description: "{{ $labels.name }} CPU 使用率超过 80%"
+
+      # API 响应时间过长
+      - alert: SlowAPIResponse
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API 响应时间过长"
+          description: "95% 的请求响应时间超过 2 秒"
+
+      # 数据库连接池耗尽
+      - alert: DatabaseConnectionPoolExhausted
+        expr: pg_stat_database_numbackends / pg_settings_max_connections > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "数据库连接池即将耗尽"
+          description: "当前连接数已达到最大连接数的 80%"
