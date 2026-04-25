@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     
     # AI 配置
     dashscope_api_key: str = ""
+    ai_request_timeout_seconds: int = 15
     
     # API 配置
     api_prefix: str = "/api/v1"

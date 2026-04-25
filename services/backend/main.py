@@ -6,12 +6,16 @@ Version: 4.0.0
 from fastapi import FastAPI, Query, Depends, Path, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, Field
 import logging
 import re
+import asyncio
+import json
 from typing import List, Optional
 from datetime import datetime
+from time import perf_counter
 
 # 本地模块导入
 from config import get_settings
@@ -32,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, desc
 
 # AI Agent
-from agents.movie_agent import MovieAgent
+from agents.movie_agent import MovieAgent, MovieAgentError
 from utils.helpers import AIAgent
 
 # 配置加载
@@ -44,6 +48,36 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _is_noise_message(text: str) -> bool:
+    normalized = text.strip().strip('"\'').lower()
+    if normalized == "request":
+        return True
+    if normalized.startswith("keyerror") and "request" in normalized:
+        return True
+    return False
+
+
+def _extract_exception_message(exc: Exception) -> str:
+    messages = []
+    current = exc
+    visited = set()
+
+    while current and id(current) not in visited:
+        visited.add(id(current))
+        text = str(current).strip()
+        if text and not _is_noise_message(text):
+            messages.append(text)
+        current = current.__cause__ or current.__context__
+
+    if messages:
+        return messages[-1]
+    return "AI 上游服务调用失败（可能是网络、密钥或配额问题）"
+
+
+def _sse_event(event: str, payload: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 # ==========================================
@@ -198,15 +232,132 @@ def extract_movie_titles(text: str) -> List[str]:
     return list(set(titles))
 
 
-def build_embedding_vector(query: str) -> Optional[str]:
-    """生成查询的向量表示"""
+def is_retrieval_query(query: str) -> bool:
+    """判断是否为检索意图，命中后走快速查询路径。"""
+    if not query:
+        return False
+
+    q = query.lower().strip()
+    retrieval_keywords = [
+        "推荐", "找", "搜索", "检索", "有没有", "想看", "类似", "高分", "评分", "片单",
+        "科幻", "悬疑", "喜剧", "爱情", "动作", "恐怖", "战争", "动画", "纪录片", "电影"
+    ]
+    return any(word in q for word in retrieval_keywords)
+
+
+def is_smalltalk_query(query: str) -> bool:
+    """识别无需调用大模型的闲聊问题。"""
+    if not query:
+        return False
+
+    q = query.strip().lower()
+    keywords = [
+        "你是谁", "你是干嘛的", "你能做什么", "你会什么", "自我介绍",
+        "你可以干什么", "你能干什么", "你能做啥", "你可以做什么", "你能帮我什么",
+        "who are you", "what can you do", "introduce yourself"
+    ]
+    return any(k in q for k in keywords)
+
+
+def build_smalltalk_answer(query: str) -> str:
+    """闲聊问题本地回复，降低延迟并提升稳定性。"""
+    _ = query
+    return (
+        "我是 Movie Insight Pro 的电影助手。\n"
+        "我可以帮你：\n"
+        "1. 按关键词快速检索电影（如：高分科幻、悬疑烧脑）。\n"
+        "2. 按条件筛选（年份、评分、平台）。\n"
+        "3. 做相似影片推荐（如：和《肖申克的救赎》类似）。\n"
+        "你可以直接说：推荐几部高分悬疑电影。"
+    )
+
+
+def format_fast_retrieval_answer(query: str, movies: List[Movie]) -> str:
+    """构建快速检索路径的文本回答。"""
+    lines = [f"已为你快速检索到 {len(movies)} 部相关电影："]
+    for idx, movie in enumerate(movies, start=1):
+        rating_text = f"{movie.rating}" if movie.rating is not None else "暂无"
+        year_text = movie.year or "未知年份"
+        source_text = movie.source or "unknown"
+        lines.append(f"{idx}. 《{movie.title}》({year_text}) | 评分: {rating_text} | 来源: {source_text}")
+
+    lines.append("你可以继续说：再来 5 部，或只看某年份/某类型。")
+    return "\n".join(lines)
+
+
+async def search_movies_fast(query: str, session: AsyncSession, limit: int = 5) -> List[Movie]:
+    """轻量快速检索：优先关键词 ILIKE，避免 trigram/向量导致的慢查询。"""
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    domain_terms = [
+        "科幻", "悬疑", "喜剧", "爱情", "动作", "恐怖", "战争", "动画", "纪录片", "犯罪", "冒险",
+        "高分", "经典", "治愈", "烧脑", "温馨", "电影", "导演", "演员"
+    ]
+    keywords = [term for term in domain_terms if term in q]
+
+    # 补充英文/数字 token
+    keywords.extend([t for t in re.findall(r"[A-Za-z0-9]+", q) if len(t) >= 2])
+    keywords = list(dict.fromkeys(keywords))
+
+    conditions = []
+    for kw in keywords[:5]:
+        pattern = f"%{kw}%"
+        conditions.extend([Movie.title.ilike(pattern), Movie.summary.ilike(pattern)])
+
+    # 若没有可提取关键词，退化成整句模糊匹配
+    if not conditions:
+        pattern = f"%{q}%"
+        conditions = [Movie.title.ilike(pattern), Movie.summary.ilike(pattern)]
+
+    stmt = (
+        select(Movie)
+        .where(or_(*conditions))
+        .order_by(desc(Movie.rating), desc(Movie.rating_count))
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
+async def fetch_movies_by_titles(titles: List[str], session: AsyncSession, limit: int = 10) -> List[Movie]:
+    """批量按标题模糊匹配，减少逐条查询的数据库往返。"""
+    cleaned = [t.strip() for t in titles if t and t.strip()]
+    if not cleaned:
+        return []
+
+    conditions = [Movie.title.ilike(f"%{title}%") for title in cleaned[:limit]]
+    stmt = select(Movie).where(or_(*conditions)).limit(limit)
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
+def build_embedding_vector(query: str) -> Optional[List[float]]:
+    """生成查询向量（pgvector 需要一维 float 列表）"""
     if not query:
         return None
     try:
         vector = AIAgent.generate_embedding(query)
         if not vector:
             return None
-        return "[" + ",".join(map(str, vector)) + "]"
+
+        if not isinstance(vector, list):
+            logger.warning(f"Embedding 类型异常: {type(vector)}")
+            return None
+
+        cleaned = []
+        for value in vector:
+            if isinstance(value, (int, float)):
+                cleaned.append(float(value))
+            else:
+                logger.warning(f"Embedding 元素类型异常: {type(value)}")
+                return None
+
+        if not cleaned:
+            return None
+
+        return cleaned
     except Exception as e:
         logger.warning(f"向量生成失败: {e}")
         return None
@@ -221,37 +372,63 @@ async def search_movies_by_keywords(
     混合搜索：向量搜索 + 全文检索
     """
     try:
-        search_text = func.coalesce(Movie.title, "") + " " + func.coalesce(Movie.summary, "")
+        search_text = func.concat(func.coalesce(Movie.title, ""), " ", func.coalesce(Movie.summary, ""))
         similarity_expr = func.similarity(search_text, query)
-        vector_str = build_embedding_vector(query)
-
-        if vector_str:
-            # 混合搜索：向量相似度 + 文本相似度
-            vec_sim = 1 - Movie.embedding.op("<=>")(vector_str)
-            hybrid_score = (
-                0.6 * func.coalesce(vec_sim, 0.0) + 
-                0.4 * func.coalesce(similarity_expr, 0.0)
-            )
-            stmt = (
-                select(Movie)
-                .where(or_(
-                    Movie.embedding.is_not(None), 
-                    search_text.op("%")(query)
-                ))
-                .order_by(desc(hybrid_score), desc(Movie.rating))
-                .limit(limit)
-            )
-        else:
-            # 纯文本搜索
-            stmt = (
-                select(Movie)
-                .where(search_text.op("%")(query))
-                .order_by(desc(similarity_expr), desc(Movie.rating))
-                .limit(limit)
-            )
+        # 优先保证接口稳定：这里先使用文本相似度检索。
+        # 说明：ORM + pgvector 在当前环境存在参数绑定异常，向量检索保留在 agents/tools.py 的原生 SQL 工具中。
+        stmt = (
+            select(Movie)
+            .where(search_text.op("%")(query))
+            .order_by(desc(similarity_expr), desc(Movie.rating))
+            .limit(limit)
+        )
 
         result = await session.execute(stmt)
-        return result.scalars().all()
+        movies = result.scalars().all()
+        if movies:
+            return movies
+
+        # 兜底1：宽松模糊匹配（适合“推荐几部高分科幻电影”这类自然语言）
+        like_pattern = f"%{query.strip()}%"
+        fallback_stmt = (
+            select(Movie)
+            .where(or_(Movie.title.ilike(like_pattern), Movie.summary.ilike(like_pattern)))
+            .order_by(desc(Movie.rating), desc(Movie.rating_count))
+            .limit(limit)
+        )
+        fallback_result = await session.execute(fallback_stmt)
+        movies = fallback_result.scalars().all()
+        if movies:
+            return movies
+
+        # 兜底2：抽取关键词再匹配，进一步提高召回率
+        tokens = re.findall(r"[A-Za-z0-9]+", query)
+        stopwords = {"recommend", "movie", "movies", "please", "show", "find"}
+        keywords = [t for t in tokens if len(t) >= 2 and t.lower() not in stopwords]
+
+        # 中文查询常常无法按空格分词，补充领域词典匹配。
+        domain_terms = [
+            "科幻", "悬疑", "喜剧", "爱情", "动作", "恐怖", "战争", "动画", "纪录片", "犯罪", "冒险",
+            "高分", "经典", "治愈", "烧脑", "温馨", "电影", "导演", "演员"
+        ]
+        keywords.extend([term for term in domain_terms if term in query])
+        keywords = list(dict.fromkeys(keywords))
+        if keywords:
+            conditions = []
+            for kw in keywords[:5]:
+                pattern = f"%{kw}%"
+                conditions.extend([Movie.title.ilike(pattern), Movie.summary.ilike(pattern)])
+
+            keyword_stmt = (
+                select(Movie)
+                .where(or_(*conditions))
+                .order_by(desc(Movie.rating), desc(Movie.rating_count))
+                .limit(limit)
+            )
+            keyword_result = await session.execute(keyword_stmt)
+            return keyword_result.scalars().all()
+
+        return []
     except Exception as e:
         logger.error(f"搜索异常: {e}")
         return []
@@ -312,6 +489,7 @@ async def chat_with_agent(
     if not app.state.movie_agent:
         raise AIServiceError()
     
+    started_at = perf_counter()
     client_ip = raw_request.headers.get("X-Real-IP") or raw_request.client.host
     logger.info(f"📍 AI 请求来源: {client_ip} | 查询: {request.query}")
     
@@ -323,9 +501,70 @@ async def chat_with_agent(
             logger.info(f"⚡ 缓存命中: {request.query}")
             import json
             return AgentChatResponse(**json.loads(cached))
+
+        # 闲聊快速路径：不调用外部模型，避免无必要的长耗时请求。
+        if is_smalltalk_query(request.query):
+            response = AgentChatResponse(
+                status="success",
+                agent_answer=build_smalltalk_answer(request.query),
+                movie_titles=None,
+                timestamp=datetime.now().isoformat()
+            )
+            await cache_manager.set(cache_key, response.model_dump(), ttl=3600)
+            elapsed_ms = int((perf_counter() - started_at) * 1000)
+            logger.info(f"⚡ 闲聊快速回复: {elapsed_ms}ms | 查询: {request.query}")
+            return response
+
+        # 快速检索路径：对明确检索意图优先走数据库查询，避免每次都调用 LLM。
+        if is_retrieval_query(request.query):
+            fast_movies = await search_movies_fast(request.query, db, limit=5)
+            if fast_movies:
+                answer_text = format_fast_retrieval_answer(request.query, fast_movies)
+            else:
+                answer_text = "未检索到匹配电影，请尝试更短的关键词，例如：科幻、悬疑、高分。"
+
+            response = AgentChatResponse(
+                status="success",
+                agent_answer=answer_text,
+                movie_titles=[MovieBase.model_validate(m) for m in fast_movies] if fast_movies else None,
+                timestamp=datetime.now().isoformat()
+            )
+            await cache_manager.set(cache_key, response.model_dump(), ttl=3600)
+            elapsed_ms = int((perf_counter() - started_at) * 1000)
+            logger.info(f"⚡ 快速检索完成: {elapsed_ms}ms | 查询: {request.query}")
+            return response
         
-        # AI 处理
-        ai_response = app.state.movie_agent.ask(request.query)
+        # AI 处理：放入线程执行并设置超时，避免长时间阻塞导致前端先超时
+        ai_timeout_seconds = max(1, int(getattr(settings, "ai_request_timeout_seconds", 15)))
+        try:
+            ai_response = await asyncio.wait_for(
+                asyncio.to_thread(app.state.movie_agent.ask, request.query),
+                timeout=ai_timeout_seconds
+            )
+        except asyncio.TimeoutError:
+            elapsed_ms = int((perf_counter() - started_at) * 1000)
+            logger.warning(
+                "⏱️ AI 调用超时: %dms (阈值: %ds) | 查询: %s",
+                elapsed_ms,
+                ai_timeout_seconds,
+                request.query
+            )
+            fallback_text = (
+                "这个问题处理时间有点长，我先给你一个快速入口：\n"
+                "1. 电影推荐（如：推荐5部高分科幻片）\n"
+                "2. 条件筛选（如：2020年后，评分8分以上）\n"
+                "3. 相似电影（如：类似《星际穿越》的电影）\n"
+                "你也可以换个更具体的电影问题，我会更快返回。"
+            )
+            response = AgentChatResponse(
+                status="success",
+                agent_answer=fallback_text,
+                movie_titles=None,
+                timestamp=datetime.now().isoformat()
+            )
+            await cache_manager.set(cache_key, response.model_dump(), ttl=600)
+            return response
+
         logger.info(f"🤖 AI 响应: {len(ai_response)} 字符")
         
         # 提取电影名称
@@ -334,12 +573,8 @@ async def chat_with_agent(
         
         # 验证电影是否存在于数据库
         if extracted_titles:
-            for title in extracted_titles[:10]:  # 限制最多10部
-                stmt = select(Movie).where(Movie.title.ilike(f"%{title}%")).limit(1)
-                result = await db.execute(stmt)
-                movie = result.scalar_one_or_none()
-                if movie:
-                    movie_results.append(MovieBase.model_validate(movie))
+            matched_movies = await fetch_movies_by_titles(extracted_titles, db, limit=10)
+            movie_results = [MovieBase.model_validate(movie) for movie in matched_movies]
         
         # 如果没有找到，使用搜索回退
         if not movie_results and "相似度" not in ai_response:
@@ -357,12 +592,115 @@ async def chat_with_agent(
         
         # 缓存结果
         await cache_manager.set(cache_key, response.model_dump(), ttl=86400)
+
+        elapsed_ms = int((perf_counter() - started_at) * 1000)
+        logger.info(f"✅ AI 对话完成: {elapsed_ms}ms | 查询: {request.query}")
         
         return response
         
+    except MovieAgentError as e:
+        detail = str(e)
+        if _is_noise_message(detail):
+            detail = "AI 上游服务调用失败（可能是网络、密钥或配额问题）"
+        logger.error(f"AI 处理异常: {detail}", exc_info=True)
+        raise AIServiceError(detail=f"AI 处理失败: {detail}")
     except Exception as e:
-        logger.error(f"AI 处理异常: {e}", exc_info=True)
-        raise AIServiceError(detail=f"AI 处理失败: {str(e)}")
+        root_message = _extract_exception_message(e)
+        logger.error(f"AI 处理异常: {root_message}", exc_info=True)
+        raise AIServiceError(detail=f"AI 处理失败: {root_message}")
+
+
+@app.post("/agent/chat/stream", tags=["AI 助手"])
+async def chat_with_agent_stream(
+    request: AgentChatRequest,
+    raw_request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    🤖 AI 流式对话接口（SSE）
+    用于前端实时展示 token，并在完成后附带相关电影结果。
+    """
+    if not app.state.movie_agent:
+        raise AIServiceError()
+
+    started_at = perf_counter()
+    client_ip = raw_request.headers.get("X-Real-IP") or raw_request.client.host
+    logger.info(f"📍 AI 流式请求来源: {client_ip} | 查询: {request.query}")
+
+    async def event_generator():
+        try:
+            # 闲聊快速路径：流式分片返回本地答案
+            if is_smalltalk_query(request.query):
+                quick_text = build_smalltalk_answer(request.query)
+                for i in range(0, len(quick_text), 24):
+                    yield _sse_event("chunk", {"delta": quick_text[i:i + 24]})
+                    await asyncio.sleep(0.01)
+
+                response_payload = {
+                    "status": "success",
+                    "agent_answer": quick_text,
+                    "movie_titles": None,
+                    "timestamp": datetime.now().isoformat()
+                }
+                yield _sse_event("done", response_payload)
+                elapsed_ms = int((perf_counter() - started_at) * 1000)
+                logger.info(f"⚡ 流式闲聊完成: {elapsed_ms}ms | 查询: {request.query}")
+                return
+
+            full_parts: List[str] = []
+            async for delta in app.state.movie_agent.stream_answer(request.query):
+                if not delta:
+                    continue
+                full_parts.append(delta)
+                yield _sse_event("chunk", {"delta": delta})
+
+            ai_response = "".join(full_parts).strip()
+            if not ai_response:
+                ai_response = "我暂时没有生成到有效回答，请换个问法再试。"
+                yield _sse_event("chunk", {"delta": ai_response})
+
+            extracted_titles = extract_movie_titles(ai_response)
+            movie_results: List[MovieBase] = []
+
+            if extracted_titles:
+                matched_movies = await fetch_movies_by_titles(extracted_titles, db, limit=10)
+                movie_results = [MovieBase.model_validate(movie) for movie in matched_movies]
+
+            if not movie_results:
+                fallback_movies = await search_movies_by_keywords(request.query, db, limit=5)
+                movie_results = [MovieBase.model_validate(movie) for movie in fallback_movies]
+
+            response_payload = {
+                "status": "success",
+                "agent_answer": ai_response,
+                "movie_titles": [m.model_dump() for m in movie_results] if movie_results else None,
+                "timestamp": datetime.now().isoformat()
+            }
+            yield _sse_event("done", response_payload)
+
+            elapsed_ms = int((perf_counter() - started_at) * 1000)
+            logger.info(f"✅ AI 流式对话完成: {elapsed_ms}ms | 查询: {request.query}")
+
+        except MovieAgentError as e:
+            detail = str(e)
+            if _is_noise_message(detail):
+                detail = "AI 上游服务调用失败（可能是网络、密钥或配额问题）"
+            logger.error(f"AI 流式处理异常: {detail}", exc_info=True)
+            yield _sse_event("error", {"detail": f"AI 处理失败: {detail}"})
+        except Exception as e:
+            root_message = _extract_exception_message(e)
+            logger.error(f"AI 流式处理异常: {root_message}", exc_info=True)
+            yield _sse_event("error", {"detail": f"AI 处理失败: {root_message}"})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/movies", tags=["电影检索"], response_model=MovieListResponse)
@@ -397,18 +735,12 @@ async def list_movies(
     
     # 搜索条件
     if q:
-        search_text = func.coalesce(Movie.title, "") + " " + func.coalesce(Movie.summary, "")
+        search_text = func.concat(func.coalesce(Movie.title, ""), " ", func.coalesce(Movie.summary, ""))
         similarity = func.similarity(search_text, q)
-        vector_str = build_embedding_vector(q)
-        
-        if vector_str:
-            vec_sim = 1 - Movie.embedding.op("<=>")(vector_str)
-            hybrid_score = 0.6 * func.coalesce(vec_sim, 0.0) + 0.4 * func.coalesce(similarity, 0.0)
-            stmt = stmt.where(or_(Movie.embedding.is_not(None), search_text.op("%")(q)))
-            order_exprs.append(desc(hybrid_score))
-        else:
-            stmt = stmt.where(search_text.op("%")(q))
-            order_exprs.append(desc(similarity))
+
+        # 优先保证 API 可用性，暂时走稳定的文本检索路径。
+        stmt = stmt.where(search_text.op("%")(q))
+        order_exprs.append(desc(similarity))
     
     # 过滤条件
     if source:
@@ -428,8 +760,8 @@ async def list_movies(
     
     stmt = stmt.order_by(*order_exprs)
     
-    # 计算总数
-    count_stmt = select(func.count()).select_from(stmt.subquery())
+    # 计算总数（去掉排序，避免在 count 子查询中触发无关的向量参数绑定）
+    count_stmt = select(func.count()).select_from(stmt.order_by(None).subquery())
     total = (await db.execute(count_stmt)).scalar() or 0
     
     # 分页

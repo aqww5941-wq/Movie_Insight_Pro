@@ -183,7 +183,20 @@
                         <input id="minRatingFilter" type="number" step="0.1" max="10" placeholder="最低分" class="bg-slate-50 border border-slate-200 text-slate-700 text-sm rounded-lg p-2.5 w-24 focus:outline-none focus:border-indigo-500 transition">
                     </div>
                     
-                    <div class="w-full md:w-auto mt-3 md:mt-0">
+                    <div class="w-full md:w-auto mt-3 md:mt-0 flex flex-wrap items-center gap-3">
+                        <div class="flex items-center gap-2">
+                            <span class="text-sm text-slate-500">AI检索</span>
+                            <button
+                                id="aiToggleBtn"
+                                onclick="toggleAISearch()"
+                                type="button"
+                                class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold border transition bg-slate-100 text-slate-600 border-slate-200"
+                            >
+                                <span id="aiToggleDot" class="w-2 h-2 rounded-full bg-slate-400"></span>
+                                <span id="aiToggleText">关闭</span>
+                            </button>
+                        </div>
+
                         <div class="flex items-center gap-2">
                             <span class="text-sm text-slate-500">排序:</span>
                             <div class="flex bg-slate-100 rounded-lg p-1">
@@ -238,14 +251,37 @@
             ? apiBasePath
             : window.location.origin + apiBasePath;
         let currentPage = 1;
+        let aiSearchEnabled = false;
+        let aiStreamBuffer = '';
 
         window.onload = () => {
+            syncAIToggleUI();
             // 默认渲染骨架屏，模拟高级感加载
             renderSkeleton(10);
             fetchMovies();
         };
 
         // ========== 交互逻辑 ==========
+        function toggleAISearch() {
+            aiSearchEnabled = !aiSearchEnabled;
+            syncAIToggleUI();
+        }
+
+        function syncAIToggleUI() {
+            const btn = document.getElementById('aiToggleBtn');
+            const dot = document.getElementById('aiToggleDot');
+            const text = document.getElementById('aiToggleText');
+
+            if (aiSearchEnabled) {
+                btn.className = 'inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold border transition bg-indigo-600 text-white border-indigo-600 shadow';
+                dot.className = 'w-2 h-2 rounded-full bg-emerald-300';
+                text.textContent = '开启';
+            } else {
+                btn.className = 'inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-semibold border transition bg-slate-100 text-slate-600 border-slate-200';
+                dot.className = 'w-2 h-2 rounded-full bg-slate-400';
+                text.textContent = '关闭';
+            }
+        }
         
         function setSort(type) {
             document.getElementById('sortBy').value = type;
@@ -261,19 +297,29 @@
 
         function quickAsk(query) {
             document.getElementById('searchInput').value = query;
-            askAI(query);
-        }
-
-        function handleSearch() {
-            const query = document.getElementById('searchInput').value.trim();
-            const isConversational = /\?|推荐|对比|什么|哪些|怎么样|类似|最好|最新|温馨|感人|搞笑|悬疑|科幻|动作|Top/.test(query);
-            
-            if (isConversational) {
-                askAI(query);
+            if (aiSearchEnabled) {
+                askAIStream(query);
             } else {
                 currentPage = 1;
                 fetchMovies(1);
             }
+        }
+
+        function handleSearch() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (!query) {
+                currentPage = 1;
+                fetchMovies(1);
+                return;
+            }
+
+            if (aiSearchEnabled) {
+                askAIStream(query);
+                return;
+            }
+
+            currentPage = 1;
+            fetchMovies(1);
         }
 
         function resetSearch() {
@@ -288,35 +334,68 @@
 
         // ========== 核心 API 调用 ==========
 
-        async function askAI(question) {
+        async function askAIStream(question) {
             renderSkeleton(5); // AI 思考时显示骨架
-            hideAIResponse();
+            renderAIContainer();
+            aiStreamBuffer = '';
+            document.getElementById('resultInfo').innerHTML = '🤖 AI 检索中...';
             
             try {
-                const response = await fetch(`${API_BASE_URL}/agent/chat`, {
+                const response = await fetch(`${API_BASE_URL}/agent/chat/stream`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ query: question })
                 });
-                
-                const data = await response.json();
-                
-                if (response.ok && data.status === "success") {
-                    typewriterEffect(data.agent_answer); // 打字机特效
-                    
-                    if (data.movie_titles && data.movie_titles.length > 0) {
-                        renderMovies(data.movie_titles, data.movie_titles.length);
-                        document.getElementById('resultInfo').innerHTML = `🤖 AI 精选推荐 · ${data.movie_titles.length} 部影片`;
-                    } else {
-                        showEmpty();
-                    }
-                    document.getElementById('pagination').innerHTML = '';
-                } else {
-                    showError(data.detail || 'AI 暂时离线');
+
+                if (response.status === 404) {
+                    await askAIFallback(question);
+                    return;
                 }
+
+                if (!response.ok) {
+                    const detail = await readErrorDetail(response, 'AI 暂时离线');
+                    showError(detail);
+                    return;
+                }
+
+                const reader = response.body?.getReader();
+                if (!reader) throw new Error('浏览器不支持流式响应');
+
+                const decoder = new TextDecoder('utf-8');
+                let pending = '';
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+
+                    pending += decoder.decode(value, { stream: true });
+                    const blocks = pending.split('\n\n');
+                    pending = blocks.pop() || '';
+                    blocks.forEach(parseSSEBlock);
+                }
+
+                if (pending.trim()) parseSSEBlock(pending);
             } catch (error) {
                 showError(error.message);
             }
+        }
+
+        async function askAIFallback(question) {
+            const response = await fetch(`${API_BASE_URL}/agent/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: question })
+            });
+            const data = await safeReadJson(response);
+
+            if (!response.ok || !data || data.status !== 'success') {
+                const detail = data?.detail || await readErrorDetail(response, 'AI 暂时离线');
+                showError(detail);
+                return;
+            }
+
+            appendAIChunk(data.agent_answer || '');
+            finishAIResult(data);
         }
 
         async function fetchMovies(page = 1) {
@@ -342,18 +421,21 @@
 
             try {
                 const response = await fetch(`${API_BASE_URL}/movies?${params}`);
-                const data = await response.json();
+                const data = await safeReadJson(response);
                 
-                if (response.ok) {
+                if (response.ok && data) {
                     currentPage = data.page;
-                    if (data.items.length === 0 && q) {
-                        await askAI(q); // 自动降级为 AI
+                    if (data.items.length === 0) {
+                        document.getElementById('resultInfo').innerHTML = '未检索到匹配结果';
+                        document.getElementById('pagination').innerHTML = '';
+                        showEmpty();
                     } else {
                         renderMovies(data.items, data.total);
                         renderPagination(data);
                     }
                 } else {
-                    showError(data.detail || '请求失败');
+                    const detail = data?.detail || await readErrorDetail(response, '请求失败');
+                    showError(detail);
                 }
             } catch (error) {
                 showError(error.message);
@@ -437,8 +519,7 @@
             `).join('');
         }
 
-        // AI 打字机特效
-        function typewriterEffect(text) {
+        function renderAIContainer() {
             const container = document.getElementById('aiResponseArea');
             container.classList.remove('hidden');
             container.innerHTML = `
@@ -451,17 +532,65 @@
                             <p class="text-xs text-slate-500">基于语义理解分析</p>
                         </div>
                     </div>
-                    <div class="prose prose-indigo max-w-none text-slate-700 leading-relaxed" id="aiTextOutput"></div>
+                    <div class="prose prose-indigo max-w-none text-slate-700 leading-relaxed whitespace-pre-wrap" id="aiTextOutput"></div>
                 </div>
             `;
-            
+        }
+
+        function parseSSEBlock(block) {
+            const lines = block.split('\n');
+            let eventName = 'message';
+            let dataText = '';
+
+            for (const rawLine of lines) {
+                const line = rawLine.trim();
+                if (!line) continue;
+                if (line.startsWith('event:')) eventName = line.slice(6).trim();
+                if (line.startsWith('data:')) dataText += line.slice(5).trim();
+            }
+
+            if (!dataText) return;
+
+            let payload;
+            try {
+                payload = JSON.parse(dataText);
+            } catch (_) {
+                return;
+            }
+
+            if (eventName === 'chunk') {
+                appendAIChunk(payload.delta || '');
+                return;
+            }
+            if (eventName === 'done') {
+                finishAIResult(payload);
+                return;
+            }
+            if (eventName === 'error') {
+                showError(payload.detail || 'AI 流式请求失败');
+            }
+        }
+
+        function appendAIChunk(delta) {
+            if (!delta) return;
+            aiStreamBuffer += delta;
             const output = document.getElementById('aiTextOutput');
-            const cleanText = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // 预处理加粗
-            
-            // 简单模拟打字，如果是 HTML 结构太复杂建议直接显示
-            // 这里为了效果我们快速显示内容
-            output.innerHTML = cleanText;
-            output.classList.add('animate-[fadeIn_1s_ease]');
+            if (output) output.textContent = aiStreamBuffer;
+        }
+
+        function finishAIResult(data) {
+            const finalText = data.agent_answer || aiStreamBuffer;
+            const output = document.getElementById('aiTextOutput');
+            if (output) output.textContent = finalText;
+
+            if (data.movie_titles && data.movie_titles.length > 0) {
+                renderMovies(data.movie_titles, data.movie_titles.length);
+                document.getElementById('resultInfo').innerHTML = `🤖 AI 相关影片 · ${data.movie_titles.length} 部`;
+            } else {
+                document.getElementById('resultInfo').innerHTML = '🤖 AI 已回答，未找到相关影片';
+                showEmpty();
+            }
+            document.getElementById('pagination').innerHTML = '';
         }
 
         function renderPagination(data) {
@@ -558,6 +687,30 @@
         function showError(msg) {
             document.getElementById('resultInfo').innerHTML = `<span class="text-red-400">❌ ${msg}</span>`;
             document.getElementById('movieList').innerHTML = '';
+        }
+
+        async function safeReadJson(response) {
+            const contentType = response.headers.get('content-type') || '';
+            if (!contentType.includes('application/json')) return null;
+            try {
+                return await response.json();
+            } catch (_) {
+                return null;
+            }
+        }
+
+        async function readErrorDetail(response, fallback) {
+            const data = await safeReadJson(response);
+            if (data && typeof data.detail === 'string' && data.detail.trim()) {
+                return data.detail;
+            }
+            try {
+                const raw = await response.text();
+                if (raw && raw.trim()) {
+                    return raw.slice(0, 200);
+                }
+            } catch (_) {}
+            return fallback;
         }
     </script>
 </body>
