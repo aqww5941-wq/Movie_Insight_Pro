@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import AsyncIterator, Any
+from typing import AsyncIterator, Any, List, Dict
 from dotenv import load_dotenv
 
 # 1. 导入最新的 LangGraph 预构建组件（这是目前最稳定的方式）
@@ -113,6 +113,50 @@ class MovieAgent:
             logger.error("MovieAgent 调用失败: %s", root_message, exc_info=True)
             raise MovieAgentError(root_message) from exc
 
+    @staticmethod
+    def _build_local_catalog_context(candidates: List[Dict[str, Any]]) -> str:
+        lines = []
+        for idx, movie in enumerate(candidates, start=1):
+            summary = (movie.get("summary") or "").strip()
+            if len(summary) > 180:
+                summary = summary[:180] + "..."
+            similarity = movie.get("similarity")
+            sim_text = f"{similarity:.3f}" if isinstance(similarity, (int, float)) else "N/A"
+            lines.append(
+                f"{idx}. 片名: {movie.get('title', '')}\n"
+                f"   年份: {movie.get('year', '未知')} | 评分: {movie.get('rating', '暂无')} | 来源: {movie.get('source', '未知')}\n"
+                f"   导演: {movie.get('director', '未知')}\n"
+                f"   相似度: {sim_text}\n"
+                f"   简介: {summary or '暂无简介'}"
+            )
+        return "\n".join(lines)
+
+    def ask_grounded(self, query: str, candidates: List[Dict[str, Any]]) -> str:
+        """仅基于本地候选电影回答。"""
+        catalog_context = self._build_local_catalog_context(candidates)
+        system_instruction = (
+            "你是本地电影库检索助手。\n"
+            "你只能基于给定的“候选电影列表”回答，严禁编造或引入列表外的影视作品。\n"
+            "若用户问题与候选电影不完全匹配，也只能在候选范围内给出最相关推荐。\n"
+            "回答请使用中文，先给结论，再给推荐理由，保持简洁。"
+        )
+        user_prompt = (
+            f"用户问题：{query}\n\n"
+            "候选电影列表（只能从这里选）：\n"
+            f"{catalog_context}\n\n"
+            "请基于候选列表给出推荐，并尽量提及相似度高的电影。"
+        )
+        try:
+            result = self.llm.invoke([("system", system_instruction), ("user", user_prompt)])
+            text = self._chunk_to_text(getattr(result, "content", ""))
+            return text.strip() or "我已找到本地候选影片，但暂时无法生成推荐说明。"
+        except Exception as exc:
+            root_message = _extract_root_error_message(exc)
+            if _is_noise_message(root_message):
+                root_message = "AI 上游服务调用失败（可能是网络、密钥或配额问题）"
+            logger.error("MovieAgent 本地约束回答失败: %s", root_message, exc_info=True)
+            raise MovieAgentError(root_message) from exc
+
     async def stream_answer(self, query: str) -> AsyncIterator[str]:
         """
         直接流式调用大模型，用于前端实时展示 token。
@@ -138,6 +182,32 @@ class MovieAgent:
             if _is_noise_message(root_message):
                 root_message = "AI 上游服务调用失败（可能是网络、密钥或配额问题）"
             logger.error("MovieAgent 流式调用失败: %s", root_message, exc_info=True)
+            raise MovieAgentError(root_message) from exc
+
+    async def stream_grounded_answer(self, query: str, candidates: List[Dict[str, Any]]) -> AsyncIterator[str]:
+        """仅基于本地候选电影进行流式回答。"""
+        catalog_context = self._build_local_catalog_context(candidates)
+        system_instruction = (
+            "你是本地电影库检索助手。\n"
+            "你只能基于给定候选电影列表回答，严禁引用列表外影视作品。\n"
+            "回答请使用中文，简洁清晰。"
+        )
+        user_prompt = (
+            f"用户问题：{query}\n\n"
+            "候选电影列表（只能从这里选）：\n"
+            f"{catalog_context}\n\n"
+            "请给出推荐结论和简短理由。"
+        )
+        try:
+            async for chunk in self.llm.astream([("system", system_instruction), ("user", user_prompt)]):
+                text = self._chunk_to_text(getattr(chunk, "content", ""))
+                if text:
+                    yield text
+        except Exception as exc:
+            root_message = _extract_root_error_message(exc)
+            if _is_noise_message(root_message):
+                root_message = "AI 上游服务调用失败（可能是网络、密钥或配额问题）"
+            logger.error("MovieAgent 本地约束流式调用失败: %s", root_message, exc_info=True)
             raise MovieAgentError(root_message) from exc
 
 if __name__ == "__main__":

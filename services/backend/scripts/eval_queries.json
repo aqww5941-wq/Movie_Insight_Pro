@@ -1,0 +1,18 @@
+[
+  {
+    "query": "类似肖申克的救赎的电影",
+    "relevant_titles": ["The Shawshank Redemption", "肖申克"]
+  },
+  {
+    "query": "类似星际穿越的科幻电影",
+    "relevant_titles": ["Interstellar", "星际穿越"]
+  },
+  {
+    "query": "诺兰导演的高分电影",
+    "relevant_titles": ["The Prestige", "Inception", "Interstellar"]
+  },
+  {
+    "query": "温馨治愈类家庭电影",
+    "relevant_titles": ["Little Miss Sunshine", "Wonder"]
+  }
+]

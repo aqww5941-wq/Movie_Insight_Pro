@@ -33,7 +33,7 @@ from exceptions import (
 
 # 引入 SQLAlchemy 异步组件
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, desc
+from sqlalchemy import select, func, or_, desc, text
 
 # AI Agent
 from agents.movie_agent import MovieAgent, MovieAgentError
@@ -48,6 +48,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+LOCAL_DB_NO_MATCH_TEXT = "本地数据库里没有符合条件的影视作品哦"
 
 
 def _is_noise_message(text: str) -> bool:
@@ -285,6 +286,191 @@ def format_fast_retrieval_answer(query: str, movies: List[Movie]) -> str:
     return "\n".join(lines)
 
 
+def build_local_recommendation_fallback(candidates: List[dict]) -> str:
+    """当大模型超时时的兜底推荐文案（仅本地候选）。"""
+    lines = ["已基于本地数据库为你找到这些相关影视作品："]
+    for idx, item in enumerate(candidates[:5], start=1):
+        title = item.get("title") or "未知片名"
+        year = item.get("year") or "未知年份"
+        rating = item.get("rating") if item.get("rating") is not None else "暂无"
+        similarity = item.get("similarity")
+        sim_text = f"{similarity:.3f}" if isinstance(similarity, (int, float)) else "N/A"
+        lines.append(f"{idx}. 《{title}》({year}) | 评分: {rating} | 相似度: {sim_text}")
+    return "\n".join(lines)
+
+
+def to_grounding_candidates(candidates: List[tuple[Movie, float]]) -> List[dict]:
+    payload = []
+    for movie, score in candidates:
+        payload.append({
+            "id": movie.id,
+            "title": movie.title,
+            "year": movie.year,
+            "rating": movie.rating,
+            "rating_count": movie.rating_count,
+            "source": movie.source,
+            "director": movie.director,
+            "stars": movie.stars,
+            "summary": movie.summary,
+            "cover_url": movie.cover_url,
+            "similarity": float(score),
+        })
+    return payload
+
+
+async def search_movies_for_ai_mode(
+    query: str,
+    session: AsyncSession
+) -> List[tuple[Movie, float]]:
+    """
+    AI 模式专用检索：必须先从本地库按相似度召回，达阈值才允许推荐。
+    """
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    limit = max(1, int(getattr(settings, "ai_retrieval_limit", 8)))
+    threshold = float(getattr(settings, "ai_similarity_threshold", 0.16))
+    vector_weight = float(getattr(settings, "ai_hybrid_vector_weight", 0.65))
+    text_weight = float(getattr(settings, "ai_hybrid_text_weight", 0.35))
+    candidate_pool = max(limit, int(getattr(settings, "ai_hnsw_candidate_pool", 80)))
+    rrf_k = max(1, int(getattr(settings, "ai_rrf_k", 60)))
+    rrf_weight = float(getattr(settings, "ai_rrf_weight", 0.20))
+    embedding = build_embedding_vector(q)
+    picked: List[tuple[Movie, float]] = []
+
+    search_text = func.concat(
+        func.coalesce(Movie.title, ""),
+        " ",
+        func.coalesce(Movie.summary, ""),
+        " ",
+        func.coalesce(Movie.director, ""),
+        " ",
+        func.coalesce(Movie.stars, ""),
+    )
+    similarity_expr = func.similarity(search_text, q)
+
+    # 主路径：RRF 融合（向量召回 + 文本召回）
+    if embedding:
+        vector_str = "[" + ",".join(map(str, embedding)) + "]"
+        vector_sql = text("""
+            SELECT
+                id,
+                COALESCE(1 - (embedding <=> CAST(:qvec AS vector)), 0.0) AS vec_score
+            FROM movies
+            WHERE embedding IS NOT NULL
+            ORDER BY embedding <=> CAST(:qvec AS vector)
+            LIMIT :pool
+        """)
+        vector_rows = (await session.execute(
+            vector_sql,
+            {"qvec": vector_str, "pool": candidate_pool}
+        )).all()
+    else:
+        vector_rows = []
+
+    text_rows = (await session.execute(
+        select(Movie.id, similarity_expr.label("text_score"))
+        .order_by(desc(similarity_expr))
+        .limit(candidate_pool)
+    )).all()
+
+    fused_map: dict[int, dict] = {}
+    for idx, row in enumerate(vector_rows, start=1):
+        mid = int(row.id)
+        item = fused_map.setdefault(mid, {"vec_rank": None, "text_rank": None, "vec_score": 0.0, "text_score": 0.0})
+        item["vec_rank"] = idx
+        item["vec_score"] = float(row.vec_score or 0.0)
+
+    for idx, row in enumerate(text_rows, start=1):
+        mid = int(row.id)
+        item = fused_map.setdefault(mid, {"vec_rank": None, "text_rank": None, "vec_score": 0.0, "text_score": 0.0})
+        item["text_rank"] = idx
+        item["text_score"] = float(row.text_score or 0.0)
+
+    ranked_ids: List[tuple[int, float, float]] = []
+    for mid, item in fused_map.items():
+        vec_rank = item["vec_rank"]
+        text_rank = item["text_rank"]
+        vec_score = item["vec_score"]
+        text_score = max(0.0, item["text_score"])
+
+        rrf_score = 0.0
+        if vec_rank is not None:
+            rrf_score += 1.0 / (rrf_k + vec_rank)
+        if text_rank is not None:
+            rrf_score += 1.0 / (rrf_k + text_rank)
+
+        semantic_score = vector_weight * vec_score + text_weight * text_score
+        final_score = semantic_score + rrf_weight * rrf_score
+        ranked_ids.append((mid, final_score, semantic_score))
+
+    ranked_ids.sort(key=lambda x: x[1], reverse=True)
+    ranked_ids = ranked_ids[:limit]
+
+    if ranked_ids:
+        movie_ids = [mid for mid, _, _ in ranked_ids]
+        movies = (await session.execute(select(Movie).where(Movie.id.in_(movie_ids)))).scalars().all()
+        movie_map = {m.id: m for m in movies}
+        for mid, _, semantic_score in ranked_ids:
+            movie = movie_map.get(mid)
+            if movie and semantic_score >= threshold:
+                picked.append((movie, semantic_score))
+        if picked:
+            logger.info(
+                "🧠 AI RRF 检索命中: %d 条 | query=%s | threshold=%.3f",
+                len(picked), q, threshold
+            )
+
+    # 第二阶段：放宽检索条件（不使用 % 操作符），再按阈值过滤
+    if not picked:
+        broad_stmt = (
+            select(Movie, similarity_expr)
+            .order_by(desc(similarity_expr), desc(Movie.rating), desc(Movie.rating_count))
+            .limit(limit)
+        )
+        broad_rows = (await session.execute(broad_stmt)).all()
+        picked = [
+            (movie, float(score))
+            for movie, score in broad_rows
+            if score is not None and float(score) >= threshold
+        ]
+
+    # 兜底：标题 token 命中时可视为高相关
+    if not picked:
+        stop_tokens = {"电影", "影视", "推荐", "类似", "想看", "有没有", "什么", "哪些", "一下", "作品"}
+        zh_tokens = [t for t in re.findall(r"[\u4e00-\u9fff]{2,}", q) if t not in stop_tokens]
+        en_tokens = [t for t in re.findall(r"[A-Za-z0-9]{2,}", q)]
+        tokens = list(dict.fromkeys(zh_tokens + en_tokens))
+        conditions = []
+        for token in tokens[:6]:
+            pattern = f"%{token}%"
+            conditions.extend([Movie.title.ilike(pattern), Movie.summary.ilike(pattern)])
+
+        if conditions:
+            token_stmt = (
+                select(Movie)
+                .where(or_(*conditions))
+                .order_by(desc(Movie.rating), desc(Movie.rating_count))
+                .limit(min(limit, 6))
+            )
+            token_rows = (await session.execute(token_stmt)).scalars().all()
+            picked = [(movie, 0.88) for movie in token_rows]
+
+    # 最后一层兜底：完整标题直接命中
+    if not picked:
+        like_stmt = (
+            select(Movie)
+            .where(Movie.title.ilike(f"%{q}%"))
+            .order_by(desc(Movie.rating), desc(Movie.rating_count))
+            .limit(min(limit, 5))
+        )
+        like_rows = (await session.execute(like_stmt)).scalars().all()
+        picked = [(movie, 0.999) for movie in like_rows]
+
+    return picked
+
+
 async def search_movies_fast(query: str, session: AsyncSession, limit: int = 5) -> List[Movie]:
     """轻量快速检索：优先关键词 ILIKE，避免 trigram/向量导致的慢查询。"""
     q = (query or "").strip()
@@ -495,7 +681,7 @@ async def chat_with_agent(
     
     try:
         # 检查缓存
-        cache_key = f"ai:chat:{request.query}"
+        cache_key = f"ai:chat:v4:{request.query}"
         cached = await cache_manager.get(cache_key)
         if cached:
             logger.info(f"⚡ 缓存命中: {request.query}")
@@ -515,30 +701,32 @@ async def chat_with_agent(
             logger.info(f"⚡ 闲聊快速回复: {elapsed_ms}ms | 查询: {request.query}")
             return response
 
-        # 快速检索路径：对明确检索意图优先走数据库查询，避免每次都调用 LLM。
-        if is_retrieval_query(request.query):
-            fast_movies = await search_movies_fast(request.query, db, limit=5)
-            if fast_movies:
-                answer_text = format_fast_retrieval_answer(request.query, fast_movies)
-            else:
-                answer_text = "未检索到匹配电影，请尝试更短的关键词，例如：科幻、悬疑、高分。"
-
+        # AI 模式：先召回本地电影（相似度达阈值），再由模型基于候选生成回答
+        matched = await search_movies_for_ai_mode(request.query, db)
+        if not matched:
             response = AgentChatResponse(
                 status="success",
-                agent_answer=answer_text,
-                movie_titles=[MovieBase.model_validate(m) for m in fast_movies] if fast_movies else None,
+                agent_answer=LOCAL_DB_NO_MATCH_TEXT,
+                movie_titles=None,
                 timestamp=datetime.now().isoformat()
             )
-            await cache_manager.set(cache_key, response.model_dump(), ttl=3600)
+            await cache_manager.set(cache_key, response.model_dump(), ttl=1800)
             elapsed_ms = int((perf_counter() - started_at) * 1000)
-            logger.info(f"⚡ 快速检索完成: {elapsed_ms}ms | 查询: {request.query}")
+            logger.info(f"⚡ AI 本地召回为空: {elapsed_ms}ms | 查询: {request.query}")
             return response
-        
-        # AI 处理：放入线程执行并设置超时，避免长时间阻塞导致前端先超时
+
+        grounding_candidates = to_grounding_candidates(matched)
+        movie_results = [MovieBase.model_validate(movie) for movie, _ in matched]
+
+        # 模型回答：放入线程执行并设置超时，超时则走本地模板兜底
         ai_timeout_seconds = max(1, int(getattr(settings, "ai_request_timeout_seconds", 15)))
         try:
             ai_response = await asyncio.wait_for(
-                asyncio.to_thread(app.state.movie_agent.ask, request.query),
+                asyncio.to_thread(
+                    app.state.movie_agent.ask_grounded,
+                    request.query,
+                    grounding_candidates
+                ),
                 timeout=ai_timeout_seconds
             )
         except asyncio.TimeoutError:
@@ -549,38 +737,17 @@ async def chat_with_agent(
                 ai_timeout_seconds,
                 request.query
             )
-            fallback_text = (
-                "这个问题处理时间有点长，我先给你一个快速入口：\n"
-                "1. 电影推荐（如：推荐5部高分科幻片）\n"
-                "2. 条件筛选（如：2020年后，评分8分以上）\n"
-                "3. 相似电影（如：类似《星际穿越》的电影）\n"
-                "你也可以换个更具体的电影问题，我会更快返回。"
-            )
+            fallback_text = build_local_recommendation_fallback(grounding_candidates)
             response = AgentChatResponse(
                 status="success",
                 agent_answer=fallback_text,
-                movie_titles=None,
+                movie_titles=movie_results if movie_results else None,
                 timestamp=datetime.now().isoformat()
             )
             await cache_manager.set(cache_key, response.model_dump(), ttl=600)
             return response
 
         logger.info(f"🤖 AI 响应: {len(ai_response)} 字符")
-        
-        # 提取电影名称
-        extracted_titles = extract_movie_titles(ai_response)
-        movie_results = []
-        
-        # 验证电影是否存在于数据库
-        if extracted_titles:
-            matched_movies = await fetch_movies_by_titles(extracted_titles, db, limit=10)
-            movie_results = [MovieBase.model_validate(movie) for movie in matched_movies]
-        
-        # 如果没有找到，使用搜索回退
-        if not movie_results and "相似度" not in ai_response:
-            logger.info("💡 执行搜索回退...")
-            fallback_movies = await search_movies_by_keywords(request.query, db, limit=5)
-            movie_results = [MovieBase.model_validate(m) for m in fallback_movies]
         
         # 构建响应
         response = AgentChatResponse(
@@ -647,8 +814,24 @@ async def chat_with_agent_stream(
                 logger.info(f"⚡ 流式闲聊完成: {elapsed_ms}ms | 查询: {request.query}")
                 return
 
+            matched = await search_movies_for_ai_mode(request.query, db)
+            if not matched:
+                yield _sse_event("chunk", {"delta": LOCAL_DB_NO_MATCH_TEXT})
+                response_payload = {
+                    "status": "success",
+                    "agent_answer": LOCAL_DB_NO_MATCH_TEXT,
+                    "movie_titles": None,
+                    "timestamp": datetime.now().isoformat()
+                }
+                yield _sse_event("done", response_payload)
+                elapsed_ms = int((perf_counter() - started_at) * 1000)
+                logger.info(f"⚡ 流式本地召回为空: {elapsed_ms}ms | 查询: {request.query}")
+                return
+
+            grounding_candidates = to_grounding_candidates(matched)
+            movie_results = [MovieBase.model_validate(movie) for movie, _ in matched]
             full_parts: List[str] = []
-            async for delta in app.state.movie_agent.stream_answer(request.query):
+            async for delta in app.state.movie_agent.stream_grounded_answer(request.query, grounding_candidates):
                 if not delta:
                     continue
                 full_parts.append(delta)
@@ -656,19 +839,8 @@ async def chat_with_agent_stream(
 
             ai_response = "".join(full_parts).strip()
             if not ai_response:
-                ai_response = "我暂时没有生成到有效回答，请换个问法再试。"
+                ai_response = build_local_recommendation_fallback(grounding_candidates)
                 yield _sse_event("chunk", {"delta": ai_response})
-
-            extracted_titles = extract_movie_titles(ai_response)
-            movie_results: List[MovieBase] = []
-
-            if extracted_titles:
-                matched_movies = await fetch_movies_by_titles(extracted_titles, db, limit=10)
-                movie_results = [MovieBase.model_validate(movie) for movie in matched_movies]
-
-            if not movie_results:
-                fallback_movies = await search_movies_by_keywords(request.query, db, limit=5)
-                movie_results = [MovieBase.model_validate(movie) for movie in fallback_movies]
 
             response_payload = {
                 "status": "success",
@@ -732,14 +904,41 @@ async def list_movies(
     # 构建查询
     stmt = select(Movie)
     order_exprs = []
+    q_norm = None
+    typo_threshold = float(getattr(settings, "search_typo_similarity_threshold", 0.16))
     
     # 搜索条件
     if q:
-        search_text = func.concat(func.coalesce(Movie.title, ""), " ", func.coalesce(Movie.summary, ""))
+        q_norm = re.sub(r"[\s\W_]+", "", q.lower())
+        search_text = func.concat(
+            func.coalesce(Movie.title, ""), " ",
+            func.coalesce(Movie.summary, ""), " ",
+            func.coalesce(Movie.director, ""), " ",
+            func.coalesce(Movie.stars, "")
+        )
         similarity = func.similarity(search_text, q)
+        like_pattern = f"%{q.strip()}%"
+        norm_like_pattern = f"%{q_norm}%"
+        norm_title = func.regexp_replace(func.lower(func.coalesce(Movie.title, "")), r"[[:space:][:punct:]_]+", "", "g")
+        norm_summary = func.regexp_replace(func.lower(func.coalesce(Movie.summary, "")), r"[[:space:][:punct:]_]+", "", "g")
+        title_word_sim = func.word_similarity(func.lower(func.coalesce(Movie.title, "")), q.lower())
+        summary_word_sim = func.word_similarity(func.lower(func.coalesce(Movie.summary, "")), q.lower())
 
-        # 优先保证 API 可用性，暂时走稳定的文本检索路径。
-        stmt = stmt.where(search_text.op("%")(q))
+        # 标题检索增强：
+        # 1) 大小写无关 + ILIKE
+        # 2) 归一化后匹配（去空格/标点）
+        # 3) trigram 拼写容错
+        stmt = stmt.where(or_(
+            search_text.op("%")(q),
+            Movie.title.ilike(like_pattern),
+            Movie.summary.ilike(like_pattern),
+            norm_title.ilike(norm_like_pattern),
+            norm_summary.ilike(norm_like_pattern),
+            title_word_sim >= typo_threshold,
+            summary_word_sim >= typo_threshold,
+            similarity >= typo_threshold
+        ))
+        order_exprs.append(desc(title_word_sim))
         order_exprs.append(desc(similarity))
     
     # 过滤条件
@@ -768,6 +967,73 @@ async def list_movies(
     stmt = stmt.offset((page - 1) * limit).limit(limit)
     result = await db.execute(stmt)
     items = result.scalars().all()
+
+    # 文本路径未命中时，走向量语义回退（用于误拼兜底）
+    if q and page == 1:
+        vector = build_embedding_vector(q)
+        if vector:
+            vec_threshold = float(getattr(settings, "search_vector_similarity_threshold", 0.45))
+            vec_pool = limit
+            vector_str = "[" + ",".join(map(str, vector)) + "]"
+
+            where_parts = ["embedding IS NOT NULL"]
+            params = {"qvec": vector_str, "lim": vec_pool}
+            if source:
+                where_parts.append("LOWER(source) = LOWER(:source)")
+                params["source"] = source
+            if year:
+                where_parts.append("year = :year")
+                params["year"] = year
+            if min_rating is not None:
+                where_parts.append("rating >= :min_rating")
+                params["min_rating"] = min_rating
+
+            vector_sql = text(f"""
+                SELECT id, COALESCE(1 - (embedding <=> CAST(:qvec AS vector)), 0.0) AS vec_score
+                FROM movies
+                WHERE {' AND '.join(where_parts)}
+                ORDER BY embedding <=> CAST(:qvec AS vector)
+                LIMIT :lim
+            """)
+            vec_rows = (await db.execute(vector_sql, params)).all()
+
+            existing_ids = {movie.id for movie in items}
+            candidate_ids = [
+                int(row.id)
+                for row in vec_rows
+                if float(row.vec_score or 0.0) >= vec_threshold and int(row.id) not in existing_ids
+            ]
+
+            if candidate_ids:
+                vec_movies = (await db.execute(select(Movie).where(Movie.id.in_(candidate_ids)))).scalars().all()
+                by_id = {m.id: m for m in vec_movies}
+                for mid in candidate_ids:
+                    movie = by_id.get(mid)
+                    if movie:
+                        items.append(movie)
+
+                if len(items) > limit:
+                    items = items[:limit]
+    # 文本路径未命中时，走向量语义回退（用于误拼兜底）
+    if q and total == 0:
+        vector = build_embedding_vector(q)
+        if vector:
+            vec_threshold = float(getattr(settings, "search_vector_similarity_threshold", 0.45))
+            vector_str = "[" + ",".join(map(str, vector)) + "]"
+            vector_sql = text("""
+                SELECT id, COALESCE(1 - (embedding <=> CAST(:qvec AS vector)), 0.0) AS vec_score
+                FROM movies
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> CAST(:qvec AS vector)
+                LIMIT :lim
+            """)
+            vec_rows = (await db.execute(vector_sql, {"qvec": vector_str, "lim": limit})).all()
+            vec_ids = [int(row.id) for row in vec_rows if float(row.vec_score or 0.0) >= vec_threshold]
+            if vec_ids:
+                vec_movies = (await db.execute(select(Movie).where(Movie.id.in_(vec_ids)))).scalars().all()
+                by_id = {m.id: m for m in vec_movies}
+                items = [by_id[mid] for mid in vec_ids if mid in by_id]
+                total = len(items)
     
     # 构建响应
     response = MovieListResponse(

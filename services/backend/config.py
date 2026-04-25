@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     # AI 配置
     dashscope_api_key: str = ""
     ai_request_timeout_seconds: int = 15
+    ai_similarity_threshold: float = 0.16
+    ai_retrieval_limit: int = 8
+    ai_hybrid_vector_weight: float = 0.65
+    ai_hybrid_text_weight: float = 0.35
+    ai_hnsw_candidate_pool: int = 80
+    ai_rrf_k: int = 60
+    ai_rrf_weight: float = 0.20
+    search_typo_similarity_threshold: float = 0.16
+    search_vector_similarity_threshold: float = 0.45
     
     # API 配置
     api_prefix: str = "/api/v1"
