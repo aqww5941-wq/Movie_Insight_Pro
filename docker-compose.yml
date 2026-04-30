@@ -133,6 +133,7 @@ services:
       - "8000"
     environment:
       - TZ=Asia/Shanghai
+      - ROOT_PATH=/api
       - PG_HOST=db
       - PG_PORT=5432
       - PG_USER=${PG_USER}
@@ -216,5 +217,4 @@ networks:
     ipam:
       config:
         - subnet: 172.25.0.0/16
-
 

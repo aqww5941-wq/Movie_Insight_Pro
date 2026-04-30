@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     app_version: str = "4.0.0"
     debug: bool = False
     log_level: str = "INFO"
+
+    # 反向代理前缀（例如对外暴露为 /api 时设置为 /api）
+    # 用于 Swagger UI / OpenAPI 文档在子路径下正确引用 openapi.json 与静态资源。
+    root_path: str = ""
     
     # 数据库配置
     pg_user: str = "root"

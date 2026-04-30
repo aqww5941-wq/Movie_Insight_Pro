@@ -194,7 +194,8 @@ health_check() {
     print_info "🏥 健康检查..."
     
     # 检查后端 API
-    if curl -sf http://localhost/health > /dev/null; then
+    # 注意：Nginx 把后端 API 挂在 /api/ 下（见 services/nginx/nginx.conf）
+    if curl -sf http://localhost/api/health > /dev/null; then
         print_success "✅ 后端 API 正常"
     else
         print_error "❌ 后端 API 异常"

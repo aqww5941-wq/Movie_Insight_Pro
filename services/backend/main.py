@@ -33,7 +33,7 @@ from exceptions import (
 
 # 引入 SQLAlchemy 异步组件
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, desc, text
+from sqlalchemy import select, func, or_, desc, text, cast, Numeric
 
 # AI Agent
 from agents.movie_agent import MovieAgent, MovieAgentError
@@ -50,7 +50,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 LOCAL_DB_NO_MATCH_TEXT = "本地数据库里没有符合条件的影视作品哦"
 
-
 def _is_noise_message(text: str) -> bool:
     normalized = text.strip().strip('"\'').lower()
     if normalized == "request":
@@ -58,7 +57,6 @@ def _is_noise_message(text: str) -> bool:
     if normalized.startswith("keyerror") and "request" in normalized:
         return True
     return False
-
 
 def _extract_exception_message(exc: Exception) -> str:
     messages = []
@@ -129,7 +127,9 @@ app = FastAPI(
     version=settings.app_version,
     lifespan=lifespan,
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    root_path=settings.root_path,
+    root_path_in_servers=True
 )
 
 # 初始化 AI Agent
@@ -624,6 +624,7 @@ async def search_movies_by_keywords(
 # 路由定义
 # ==========================================
 
+
 @app.get("/", tags=["系统"])
 async def root():
     """API 根路径"""
@@ -1090,17 +1091,25 @@ async def platform_statistics(db: AsyncSession = Depends(get_db)):
         return json.loads(cached)
     
     try:
+        count_expr = func.count().label("count")
+        avg_rating_expr = func.round(
+            cast(func.avg(Movie.rating), Numeric),
+            2
+        ).label("avg_rating")
+        max_rating_expr = func.max(Movie.rating).label("max_rating")
+        min_rating_expr = func.min(Movie.rating).label("min_rating")
+
         stmt = (
             select(
                 Movie.source,
-                func.count().label('count'),
-                func.round(func.avg(Movie.rating), 2).label('avg_rating'),
-                func.max(Movie.rating).label('max_rating'),
-                func.min(Movie.rating).label('min_rating')
+                count_expr,
+                avg_rating_expr,
+                max_rating_expr,
+                min_rating_expr,
             )
             .where(Movie.source.is_not(None))
             .group_by(Movie.source)
-            .order_by(desc('count'))
+            .order_by(count_expr.desc())
         )
         
         result = await db.execute(stmt)
@@ -1110,7 +1119,7 @@ async def platform_statistics(db: AsyncSession = Depends(get_db)):
         return stats
         
     except Exception as e:
-        logger.error(f"统计查询错误: {e}")
+        logger.exception("统计查询错误")
         raise DatabaseError(detail="统计数据查询失败")
 
 
