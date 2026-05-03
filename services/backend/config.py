@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     
     # AI 配置
     dashscope_api_key: str = ""
-    ai_request_timeout_seconds: int = 15
+    ai_request_timeout_seconds: int = 30
+    ai_multi_intent_extra_timeout_seconds: int = 20
     ai_similarity_threshold: float = 0.16
     ai_retrieval_limit: int = 8
     ai_hybrid_vector_weight: float = 0.65

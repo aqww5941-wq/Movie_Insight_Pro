@@ -2,6 +2,8 @@
 数据库连接管理模块
 提供异步数据库连接和会话管理
 """
+import asyncio
+
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from config import get_settings
 import logging
@@ -36,7 +38,13 @@ async def get_db():
             yield session
         except Exception as e:
             logger.error(f"数据库会话错误: {e}")
-            await session.rollback()
+            try:
+                await asyncio.shield(session.rollback())
+            except Exception as rollback_error:
+                logger.warning(f"数据库回滚失败: {rollback_error}")
             raise
         finally:
-            await session.close()
+            try:
+                await asyncio.shield(session.close())
+            except Exception as close_error:
+                logger.warning(f"数据库会话关闭失败: {close_error}")

@@ -19,7 +19,7 @@ from time import perf_counter
 
 # 本地模块导入
 from config import get_settings
-from database import get_db, engine
+from database import get_db, engine, AsyncSessionLocal
 from models import Movie, Base
 from cache import cache_manager
 from exceptions import (
@@ -37,6 +37,7 @@ from sqlalchemy import select, func, or_, desc, text, cast, Numeric
 
 # AI Agent
 from agents.movie_agent import MovieAgent, MovieAgentError
+from agents.skills import SkillRouter
 from utils.helpers import AIAgent
 
 # 配置加载
@@ -49,6 +50,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 LOCAL_DB_NO_MATCH_TEXT = "本地数据库里没有符合条件的影视作品哦"
+INTENT_RULE_ROUTER = SkillRouter()
 
 def _is_noise_message(text: str) -> bool:
     normalized = text.strip().strip('"\'').lower()
@@ -137,7 +139,7 @@ try:
     app.state.movie_agent = MovieAgent()
     logger.info("✅ AI Agent 初始化成功")
 except Exception as e:
-    logger.error(f"❌ AI Agent 初始化失败: {e}")
+    logger.error(f"❌ AI Agent 初始化失败: {e}", exc_info=True)
     app.state.movie_agent = None
 
 # CORS 配置
@@ -273,6 +275,57 @@ def build_smalltalk_answer(query: str) -> str:
     )
 
 
+def get_ai_timeout_seconds(query: str) -> int:
+    """根据意图复杂度动态计算 AI 超时时间。"""
+    base_timeout = max(1, int(getattr(settings, "ai_request_timeout_seconds", 30)))
+    extra_timeout = max(0, int(getattr(settings, "ai_multi_intent_extra_timeout_seconds", 20)))
+    hard_cap = max(10, int(getattr(settings, "ai_hard_timeout_cap_seconds", 75)))
+    labels = INTENT_RULE_ROUTER.route_rule_multi(query or "")
+    active_labels = [label for label in labels if label != "general"]
+    is_multi_intent = len(active_labels) >= 2
+    if is_multi_intent:
+        # 多意图链路按意图数扩展超时，对 comparison 场景再额外放宽。
+        timeout = base_timeout + extra_timeout * (len(active_labels) - 1)
+        if "comparison" in active_labels:
+            timeout += max(40, extra_timeout * 2)
+        capped = min(timeout, hard_cap)
+        if capped < timeout:
+            logger.info("🧭 AI 超时阈值被硬上限截断: raw=%ss cap=%ss | labels=%s", timeout, hard_cap, ",".join(active_labels))
+        return capped
+    capped = min(base_timeout, hard_cap)
+    if capped < base_timeout:
+        logger.info("🧭 AI 超时阈值被硬上限截断: raw=%ss cap=%ss | labels=single", base_timeout, hard_cap)
+    return capped
+
+
+def should_use_fast_retrieval(query: str) -> bool:
+    """仅对单意图检索问题启用快速检索短路。"""
+    q = (query or "").lower().strip()
+    if not q:
+        return False
+
+    # 对比类问题必须走 AI 推理链路，避免被快速检索模板短路。
+    comparison_patterns = [
+        r"\bvs\b",
+        r"\bversus\b",
+        r"对比",
+        r"比较",
+        r"区别",
+        r"差异",
+        r"与.{0,20}(比|对比|比较)",
+        r"和.{0,20}(比|对比|比较)",
+    ]
+    if any(re.search(pattern, q, re.IGNORECASE) for pattern in comparison_patterns):
+        return False
+
+    labels = INTENT_RULE_ROUTER.route_rule_multi(query or "")
+    if "comparison" in labels:
+        return False
+    if len(labels) >= 2 and "general" not in labels:
+        return False
+    return is_retrieval_query(query)
+
+
 def format_fast_retrieval_answer(query: str, movies: List[Movie]) -> str:
     """构建快速检索路径的文本回答。"""
     lines = [f"已为你快速检索到 {len(movies)} 部相关电影："]
@@ -284,6 +337,63 @@ def format_fast_retrieval_answer(query: str, movies: List[Movie]) -> str:
 
     lines.append("你可以继续说：再来 5 部，或只看某年份/某类型。")
     return "\n".join(lines)
+
+
+def format_timeout_fallback_answer(query: str, movies: List[Movie]) -> str:
+    """构建 AI 超时后的兜底文案，避免与快速检索短路结果混淆。"""
+    if not movies:
+        return "AI 推理超时，请稍后重试或缩短问题。"
+    base = format_fast_retrieval_answer(query, movies)
+    return "AI 推理超时，以下为本地候选结果（非完整对比分析）：\n" + base
+
+
+def extract_comparison_target(query: str) -> Optional[str]:
+    text = (query or "").strip()
+    if not text:
+        return None
+    patterns = [
+        r"(?:与|和)([^，。；;,.]{1,30}?)(?:对比|比较|相比)",
+        r"(?:对比|比较)([^，。；;,.]{1,30})",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text)
+        if m:
+            target = m.group(1).strip("《》\"' ")
+            if target:
+                return target
+    return None
+
+
+def extract_recommendation_part(query: str) -> str:
+    text = (query or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"[，,。；;]?\s*(?:并)?(?:与|和)[^，。；;,.]{1,30}?(?:对比|比较|相比)", "", text)
+    text = re.sub(r"[，,。；;]?\s*(?:对比|比较).*$", "", text)
+    return text.strip() or query
+
+
+async def build_timeout_fallback_movies(query: str, labels: List[str], db: AsyncSession, limit: int = 5) -> List[Movie]:
+    # 多意图对比场景：优先用“推荐片段 + 对比对象”组合召回，避免整句污染检索。
+    if "comparison" in labels and len(labels) >= 2:
+        rec_query = extract_recommendation_part(query)
+        target = extract_comparison_target(query)
+
+        collected: List[Movie] = []
+        seen_ids = set()
+        for q in [rec_query, target]:
+            if not q:
+                continue
+            rows = await search_movies_fast(q, db, limit=limit)
+            for m in rows:
+                if m.id not in seen_ids:
+                    seen_ids.add(m.id)
+                    collected.append(m)
+                    if len(collected) >= limit:
+                        return collected
+        if collected:
+            return collected
+    return await search_movies_fast(query, db, limit=limit)
 
 
 def build_local_recommendation_fallback(candidates: List[dict]) -> str:
@@ -681,8 +791,23 @@ async def chat_with_agent(
     logger.info(f"📍 AI 请求来源: {client_ip} | 查询: {request.query}")
     
     try:
-        # 检查缓存
-        cache_key = f"ai:chat:v4:{request.query}"
+        route_labels = INTENT_RULE_ROUTER.route_rule_multi(request.query or "")
+        fast_path = False
+        logger.info(
+            "🧭 chat route decision | fast_path=%s | labels=%s | query=%s",
+            fast_path,
+            ",".join(route_labels),
+            request.query
+        )
+
+        # 检查缓存：加入路由决策与模型信息，避免误命中历史/异构策略结果
+        model_name = ""
+        try:
+            model_name = str(getattr(getattr(app.state.movie_agent, "llm", None), "model_name", "") or "")
+        except Exception:
+            model_name = ""
+        labels_key = ",".join(route_labels)
+        cache_key = f"ai:chat:react:v7:{model_name}:fast{int(fast_path)}:labels[{labels_key}]:q:{request.query}"
         cached = await cache_manager.get(cache_key)
         if cached:
             logger.info(f"⚡ 缓存命中: {request.query}")
@@ -702,68 +827,44 @@ async def chat_with_agent(
             logger.info(f"⚡ 闲聊快速回复: {elapsed_ms}ms | 查询: {request.query}")
             return response
 
-        # AI 模式：先召回本地电影（相似度达阈值），再由模型基于候选生成回答
-        matched = await search_movies_for_ai_mode(request.query, db)
-        if not matched:
-            response = AgentChatResponse(
-                status="success",
-                agent_answer=LOCAL_DB_NO_MATCH_TEXT,
-                movie_titles=None,
-                timestamp=datetime.now().isoformat()
-            )
-            await cache_manager.set(cache_key, response.model_dump(), ttl=1800)
-            elapsed_ms = int((perf_counter() - started_at) * 1000)
-            logger.info(f"⚡ AI 本地召回为空: {elapsed_ms}ms | 查询: {request.query}")
-            return response
+        # 检索类问题优先走本地快速检索，避免大模型超时
+        if fast_path:
+            fast_movies = await search_movies_fast(request.query, db, limit=5)
+            if fast_movies:
+                fast_text = format_fast_retrieval_answer(request.query, fast_movies)
+                response = AgentChatResponse(
+                    status="success",
+                    agent_answer=fast_text,
+                    movie_titles=[MovieBase.model_validate(movie) for movie in fast_movies],
+                    timestamp=datetime.now().isoformat()
+                )
+                await cache_manager.set(cache_key, response.model_dump(), ttl=600)
+                elapsed_ms = int((perf_counter() - started_at) * 1000)
+                logger.info(f"⚡ 快速检索回复: {elapsed_ms}ms | 查询: {request.query}")
+                return response
 
-        grounding_candidates = to_grounding_candidates(matched)
-        movie_results = [MovieBase.model_validate(movie) for movie, _ in matched]
-
-        # 模型回答：放入线程执行并设置超时，超时则走本地模板兜底
-        ai_timeout_seconds = max(1, int(getattr(settings, "ai_request_timeout_seconds", 15)))
-        try:
-            ai_response = await asyncio.wait_for(
-                asyncio.to_thread(
-                    app.state.movie_agent.ask_grounded,
-                    request.query,
-                    grounding_candidates
-                ),
-                timeout=ai_timeout_seconds
-            )
-        except asyncio.TimeoutError:
-            elapsed_ms = int((perf_counter() - started_at) * 1000)
-            logger.warning(
-                "⏱️ AI 调用超时: %dms (阈值: %ds) | 查询: %s",
-                elapsed_ms,
-                ai_timeout_seconds,
-                request.query
-            )
-            fallback_text = build_local_recommendation_fallback(grounding_candidates)
-            response = AgentChatResponse(
-                status="success",
-                agent_answer=fallback_text,
-                movie_titles=movie_results if movie_results else None,
-                timestamp=datetime.now().isoformat()
-            )
-            await cache_manager.set(cache_key, response.model_dump(), ttl=600)
-            return response
+        # AI 模式：走 ReAct 工具调用链（非流式）
+        ai_response = await asyncio.to_thread(
+            app.state.movie_agent.ask,
+            request.query
+        )
 
         logger.info(f"🤖 AI 响应: {len(ai_response)} 字符")
-        
-        # 构建响应
+
+        extracted_titles = extract_movie_titles(ai_response)
+        matched_movies = await fetch_movies_by_titles(extracted_titles, db, limit=10) if extracted_titles else []
+        movie_results = [MovieBase.model_validate(movie) for movie in matched_movies]
+
         response = AgentChatResponse(
             status="success",
             agent_answer=ai_response,
             movie_titles=movie_results if movie_results else None,
             timestamp=datetime.now().isoformat()
         )
-        
-        # 缓存结果
         await cache_manager.set(cache_key, response.model_dump(), ttl=86400)
 
         elapsed_ms = int((perf_counter() - started_at) * 1000)
         logger.info(f"✅ AI 对话完成: {elapsed_ms}ms | 查询: {request.query}")
-        
         return response
         
     except MovieAgentError as e:
@@ -781,8 +882,7 @@ async def chat_with_agent(
 @app.post("/agent/chat/stream", tags=["AI 助手"])
 async def chat_with_agent_stream(
     request: AgentChatRequest,
-    raw_request: Request,
-    db: AsyncSession = Depends(get_db)
+    raw_request: Request
 ):
     """
     🤖 AI 流式对话接口（SSE）
@@ -796,6 +896,7 @@ async def chat_with_agent_stream(
     logger.info(f"📍 AI 流式请求来源: {client_ip} | 查询: {request.query}")
 
     async def event_generator():
+        ai_task: Optional[asyncio.Task] = None
         try:
             # 闲聊快速路径：流式分片返回本地答案
             if is_smalltalk_query(request.query):
@@ -815,33 +916,94 @@ async def chat_with_agent_stream(
                 logger.info(f"⚡ 流式闲聊完成: {elapsed_ms}ms | 查询: {request.query}")
                 return
 
-            matched = await search_movies_for_ai_mode(request.query, db)
-            if not matched:
-                yield _sse_event("chunk", {"delta": LOCAL_DB_NO_MATCH_TEXT})
+            # 检索类问题优先走本地快速检索，避免大模型超时
+            route_labels = INTENT_RULE_ROUTER.route_rule_multi(request.query or "")
+            fast_path = False
+            logger.info(
+                "🧭 stream route decision | fast_path=%s | labels=%s | query=%s",
+                fast_path,
+                ",".join(route_labels),
+                request.query
+            )
+            if fast_path:
+                async with AsyncSessionLocal() as db:
+                    fast_movies = await search_movies_fast(request.query, db, limit=5)
+                if fast_movies:
+                    fast_text = format_fast_retrieval_answer(request.query, fast_movies)
+                    for i in range(0, len(fast_text), 24):
+                        yield _sse_event("chunk", {"delta": fast_text[i:i + 24]})
+                        await asyncio.sleep(0.01)
+
+                    response_payload = {
+                        "status": "success",
+                        "agent_answer": fast_text,
+                        "movie_titles": [MovieBase.model_validate(m).model_dump() for m in fast_movies],
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    yield _sse_event("done", response_payload)
+                    elapsed_ms = int((perf_counter() - started_at) * 1000)
+                    logger.info(f"⚡ 流式快速检索完成: {elapsed_ms}ms | 查询: {request.query}")
+                    return
+
+            # 多意图问题走流式执行（单请求持续心跳，最终 done）
+            labels = route_labels
+            if len(labels) >= 2 and "general" not in labels:
+                logger.info("📊 多意图流式执行[%s] | 查询: %s", ",".join(labels), request.query)
+                # 先发一个进度块，避免长时间无数据导致链路被中间层断开
+                yield _sse_event("chunk", {"delta": "正在进行多意图分析，请稍候...\n"})
+
+                ai_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        app.state.movie_agent.ask,
+                        request.query
+                    )
+                )
+                while True:
+                    try:
+                        ai_response = await asyncio.wait_for(asyncio.shield(ai_task), timeout=1)
+                        break
+                    except asyncio.TimeoutError:
+                        # 心跳，保持 SSE 活跃
+                        yield _sse_event("chunk", {"delta": ""})
+
+                extracted_titles = extract_movie_titles(ai_response)
+                if extracted_titles:
+                    async with AsyncSessionLocal() as db:
+                        matched_movies = await fetch_movies_by_titles(extracted_titles, db, limit=10)
+                else:
+                    matched_movies = []
+                movie_results = [MovieBase.model_validate(movie) for movie in matched_movies]
                 response_payload = {
                     "status": "success",
-                    "agent_answer": LOCAL_DB_NO_MATCH_TEXT,
-                    "movie_titles": None,
+                    "agent_answer": ai_response,
+                    "movie_titles": [m.model_dump() for m in movie_results] if movie_results else None,
                     "timestamp": datetime.now().isoformat()
                 }
                 yield _sse_event("done", response_payload)
                 elapsed_ms = int((perf_counter() - started_at) * 1000)
-                logger.info(f"⚡ 流式本地召回为空: {elapsed_ms}ms | 查询: {request.query}")
+                logger.info(f"✅ 多意图流式完成: {elapsed_ms}ms | 查询: {request.query}")
                 return
 
-            grounding_candidates = to_grounding_candidates(matched)
-            movie_results = [MovieBase.model_validate(movie) for movie, _ in matched]
-            full_parts: List[str] = []
-            async for delta in app.state.movie_agent.stream_grounded_answer(request.query, grounding_candidates):
-                if not delta:
-                    continue
-                full_parts.append(delta)
-                yield _sse_event("chunk", {"delta": delta})
+            ai_response = await asyncio.to_thread(
+                app.state.movie_agent.ask,
+                request.query
+            )
 
-            ai_response = "".join(full_parts).strip()
+            ai_response = (ai_response or "").strip()
             if not ai_response:
-                ai_response = build_local_recommendation_fallback(grounding_candidates)
-                yield _sse_event("chunk", {"delta": ai_response})
+                ai_response = "本地数据库未匹配到可用结果。"
+
+            for i in range(0, len(ai_response), 24):
+                yield _sse_event("chunk", {"delta": ai_response[i:i + 24]})
+                await asyncio.sleep(0.01)
+
+            extracted_titles = extract_movie_titles(ai_response)
+            if extracted_titles:
+                async with AsyncSessionLocal() as db:
+                    matched_movies = await fetch_movies_by_titles(extracted_titles, db, limit=10)
+            else:
+                matched_movies = []
+            movie_results = [MovieBase.model_validate(movie) for movie in matched_movies]
 
             response_payload = {
                 "status": "success",
@@ -859,11 +1021,24 @@ async def chat_with_agent_stream(
             if _is_noise_message(detail):
                 detail = "AI 上游服务调用失败（可能是网络、密钥或配额问题）"
             logger.error(f"AI 流式处理异常: {detail}", exc_info=True)
-            yield _sse_event("error", {"detail": f"AI 处理失败: {detail}"})
+            yield _sse_event("server_error", {"detail": f"AI 处理失败: {detail}"})
+        except asyncio.CancelledError:
+            client = ""
+            try:
+                client = f"{raw_request.client.host}:{raw_request.client.port}" if raw_request and raw_request.client else "unknown"
+            except Exception:
+                client = "unknown"
+            logger.warning("⚠️ SSE 任务被取消（可能是客户端断开或服务端取消）| client=%s | 查询: %s", client, request.query)
+            if ai_task and not ai_task.done():
+                ai_task.cancel()
+            return
         except Exception as e:
             root_message = _extract_exception_message(e)
             logger.error(f"AI 流式处理异常: {root_message}", exc_info=True)
-            yield _sse_event("error", {"detail": f"AI 处理失败: {root_message}"})
+            yield _sse_event("server_error", {"detail": f"AI 处理失败: {root_message}"})
+        finally:
+            if ai_task and not ai_task.done():
+                ai_task.cancel()
 
     return StreamingResponse(
         event_generator(),
@@ -874,6 +1049,16 @@ async def chat_with_agent_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/agent/chat/stream", tags=["AI 助手"])
+async def chat_with_agent_stream_get(
+    q: str = Query(..., min_length=1, max_length=500, description="AI 对话查询"),
+    raw_request: Request = None
+):
+    """SSE GET 版本，供 EventSource 使用。"""
+    req = AgentChatRequest(query=q)
+    return await chat_with_agent_stream(req, raw_request)
 
 
 @app.get("/movies", tags=["电影检索"], response_model=MovieListResponse)

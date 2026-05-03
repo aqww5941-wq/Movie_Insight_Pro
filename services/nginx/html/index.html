@@ -253,6 +253,7 @@
         let currentPage = 1;
         let aiSearchEnabled = false;
         let aiStreamBuffer = '';
+        let aiHasReceivedChunk = false;
 
         window.onload = () => {
             syncAIToggleUI();
@@ -298,7 +299,7 @@
         function quickAsk(query) {
             document.getElementById('searchInput').value = query;
             if (aiSearchEnabled) {
-                askAIStream(query);
+                askAI(query);
             } else {
                 currentPage = 1;
                 fetchMovies(1);
@@ -314,7 +315,7 @@
             }
 
             if (aiSearchEnabled) {
-                askAIStream(query);
+                askAI(query);
                 return;
             }
 
@@ -334,49 +335,81 @@
 
         // ========== 核心 API 调用 ==========
 
-        async function askAIStream(question) {
+        function isMultiIntentQuery(question) {
+            if (!question) return false;
+
+            const text = question.trim();
+            const separators = [
+                /\bvs\b/i,
+                /\bversus\b/i,
+                /和|以及|并且|同时|分别|对比|比较|还是|或者|or|and/i,
+                /[；;]/,
+                /[，,].*[，,]/
+            ];
+
+            return separators.some((pattern) => pattern.test(text));
+        }
+
+        async function askAI(question) {
             renderSkeleton(5); // AI 思考时显示骨架
             renderAIContainer();
             aiStreamBuffer = '';
+            aiHasReceivedChunk = false;
             document.getElementById('resultInfo').innerHTML = '🤖 AI 检索中...';
-            
+
             try {
-                const response = await fetch(`${API_BASE_URL}/agent/chat/stream`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ query: question })
-                });
-
-                if (response.status === 404) {
-                    await askAIFallback(question);
-                    return;
-                }
-
-                if (!response.ok) {
-                    const detail = await readErrorDetail(response, 'AI 暂时离线');
-                    showError(detail);
-                    return;
-                }
-
-                const reader = response.body?.getReader();
-                if (!reader) throw new Error('浏览器不支持流式响应');
-
-                const decoder = new TextDecoder('utf-8');
-                let pending = '';
-
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-
-                    pending += decoder.decode(value, { stream: true });
-                    const blocks = pending.split('\n\n');
-                    pending = blocks.pop() || '';
-                    blocks.forEach(parseSSEBlock);
-                }
-
-                if (pending.trim()) parseSSEBlock(pending);
+                await askAIStream(question);
             } catch (error) {
-                showError(error.message);
+                showError(error?.message || 'AI 请求失败，请稍后重试');
+            }
+        }
+
+        async function askAIStream(question) {
+            const response = await fetch(`${API_BASE_URL}/agent/chat/stream`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: question })
+            });
+
+            if (!response.ok) {
+                const detail = await readErrorDetail(response, 'AI 流式请求失败');
+                throw new Error(detail);
+            }
+
+            const reader = response.body?.getReader();
+            if (!reader) throw new Error('浏览器不支持流式响应');
+
+            const decoder = new TextDecoder('utf-8');
+            let pending = '';
+            let sawDone = false;
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                pending += decoder.decode(value, { stream: true });
+                const blocks = pending.split('\n\n');
+                pending = blocks.pop() || '';
+                for (const block of blocks) {
+                    const parsed = parseSSEBlock(block);
+                    if (parsed === 'done') sawDone = true;
+                    if (parsed === 'server_error') {
+                        throw new Error('AI 流式请求失败');
+                    }
+                }
+            }
+
+            if (pending.trim()) {
+                const parsed = parseSSEBlock(pending);
+                if (parsed === 'done') sawDone = true;
+                if (parsed === 'server_error') throw new Error('AI 流式请求失败');
+            }
+
+            if (!sawDone) {
+                if (aiHasReceivedChunk) {
+                    document.getElementById('resultInfo').innerHTML = '⚠️ 连接中断，已展示部分结果，请重试';
+                    return;
+                }
+                throw new Error('连接中断，未收到完成事件');
             }
         }
 
@@ -549,29 +582,32 @@
                 if (line.startsWith('data:')) dataText += line.slice(5).trim();
             }
 
-            if (!dataText) return;
+            if (!dataText) return null;
 
             let payload;
             try {
                 payload = JSON.parse(dataText);
             } catch (_) {
-                return;
+                return null;
             }
 
             if (eventName === 'chunk') {
                 appendAIChunk(payload.delta || '');
-                return;
+                return 'chunk';
             }
             if (eventName === 'done') {
                 finishAIResult(payload);
-                return;
+                return 'done';
             }
-            if (eventName === 'error') {
+            if (eventName === 'server_error') {
                 showError(payload.detail || 'AI 流式请求失败');
+                return 'server_error';
             }
+            return eventName;
         }
 
         function appendAIChunk(delta) {
+            aiHasReceivedChunk = true;
             if (!delta) return;
             aiStreamBuffer += delta;
             const output = document.getElementById('aiTextOutput');
