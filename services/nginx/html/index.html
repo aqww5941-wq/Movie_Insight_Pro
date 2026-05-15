@@ -674,8 +674,9 @@
                 
                 body.innerHTML = `
                     <div class="flex flex-col md:flex-row h-full">
-                        <div class="w-full md:w-2/5 h-64 md:h-auto bg-slate-200 relative">
-                            <img src="${resolveCoverUrl(movie.cover_url)}" class="w-full h-full object-cover absolute inset-0" onerror="this.parentElement.innerHTML='<div class=\\'flex items-center justify-center h-full text-slate-400\\'>暂无封面</div>'">
+                        <div class="w-full md:w-2/5 h-64 md:h-auto bg-slate-900 relative overflow-hidden">
+                            <img src="${resolveCoverUrl(movie.cover_url)}" class="w-full h-full object-cover absolute inset-0 scale-110 blur-xl opacity-40" aria-hidden="true">
+                            <img src="${resolveCoverUrl(movie.cover_url)}" class="w-full h-full object-contain absolute inset-0 p-3 drop-shadow-2xl" onerror="this.parentElement.innerHTML='<div class=\\'flex items-center justify-center h-full text-slate-400 bg-slate-100\\'>暂无封面</div>'">
                             <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent md:hidden"></div>
                         </div>
                         <div class="flex-1 p-8 bg-white overflow-y-auto">
