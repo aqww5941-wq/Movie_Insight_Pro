@@ -13,9 +13,13 @@ import logging
 import re
 import asyncio
 import json
-from typing import List, Optional
+import os
+from urllib.parse import urlparse
+from typing import Any, List, Optional
 from datetime import datetime
 from time import perf_counter
+from http import HTTPStatus
+import httpx
 
 # 本地模块导入
 from config import get_settings
@@ -52,6 +56,96 @@ logger = logging.getLogger(__name__)
 LOCAL_DB_NO_MATCH_TEXT = "本地数据库里没有符合条件的影视作品哦"
 INTENT_RULE_ROUTER = SkillRouter()
 
+
+def _minmax_normalize(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    lo = min(values)
+    hi = max(values)
+    if hi - lo < 1e-9:
+        return [1.0 for _ in values]
+    return [(v - lo) / (hi - lo) for v in values]
+
+
+def _deep_rerank_with_model(
+    query: str,
+    candidates: list[dict[str, Any]],
+    model: str
+) -> tuple[list[int], dict[int, float]]:
+    if not query or not candidates:
+        return [], {}
+    try:
+        import dashscope
+    except Exception:
+        logger.warning("Deep rerank 失败: dashscope 不可用")
+        return [], {}
+
+    api_key = (os.getenv("DASHSCOPE_API_KEY") or "").strip()
+    if not api_key:
+        return [], {}
+
+    documents = []
+    index_to_id: dict[int, int] = {}
+    for idx, item in enumerate(candidates):
+        doc = (
+            f"标题:{item.get('title', '')}\n"
+            f"年份:{item.get('year', '')}\n"
+            f"导演:{item.get('director', '')}\n"
+            f"主演:{item.get('stars', '')}\n"
+            f"简介:{(item.get('summary', '') or '')[:260]}"
+        )
+        documents.append(doc)
+        index_to_id[idx] = int(item["id"])
+
+    try:
+        resp = dashscope.TextReRank.call(
+            model=model,
+            query=query,
+            documents=documents,
+            top_n=len(documents),
+            api_key=api_key,
+        )
+        if resp.status_code != HTTPStatus.OK:
+            logger.warning("Deep rerank 调用失败: %s", getattr(resp, "message", "unknown"))
+            return [], {}
+    except Exception as e:
+        logger.warning("Deep rerank 异常: %s", e)
+        return [], {}
+
+    output = getattr(resp, "output", None)
+    if output is None and isinstance(resp, dict):
+        output = resp.get("output")
+    results = []
+    if isinstance(output, dict):
+        results = output.get("results") or output.get("rerank_results") or []
+    elif isinstance(output, list):
+        results = output
+
+    score_map: dict[int, float] = {}
+    ordered_ids: list[int] = []
+    for row in results:
+        try:
+            if not isinstance(row, dict):
+                continue
+            idx = row.get("index")
+            if idx is None:
+                idx = row.get("document_id")
+            idx = int(idx)
+            mid = index_to_id.get(idx)
+            if mid is None:
+                continue
+            score = float(row.get("relevance_score", row.get("score", 0.0)))
+            score = max(0.0, min(1.0, score))
+            if mid not in score_map:
+                score_map[mid] = score
+                ordered_ids.append(mid)
+        except Exception:
+            continue
+
+    if not ordered_ids:
+        return [], {}
+    return ordered_ids, score_map
+
 def _is_noise_message(text: str) -> bool:
     normalized = text.strip().strip('"\'').lower()
     if normalized == "request":
@@ -79,6 +173,15 @@ def _extract_exception_message(exc: Exception) -> str:
 
 def _sse_event(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _is_allowed_image_host(raw_url: str) -> bool:
+    try:
+        parsed = urlparse(raw_url)
+        host = (parsed.hostname or "").lower()
+        return host.endswith("doubanio.com")
+    except Exception:
+        return False
 
 
 # ==========================================
@@ -203,6 +306,20 @@ class AgentChatResponse(BaseModel):
     status: str
     agent_answer: str
     movie_titles: Optional[List[MovieBase]] = None
+    timestamp: str
+
+
+class RagSearchRequest(BaseModel):
+    """RAG 检索请求（不经过 Agent）"""
+    query: str = Field(..., min_length=1, max_length=500, example="给我推荐和《Just Mercy》类似的电影")
+
+
+class RagSearchResponse(BaseModel):
+    """RAG 检索响应（不经过 Agent）"""
+    status: str
+    query: str
+    total: int
+    items: List[MovieBase]
     timestamp: str
 
 
@@ -446,6 +563,11 @@ async def search_movies_for_ai_mode(
     candidate_pool = max(limit, int(getattr(settings, "ai_hnsw_candidate_pool", 80)))
     rrf_k = max(1, int(getattr(settings, "ai_rrf_k", 60)))
     rrf_weight = float(getattr(settings, "ai_rrf_weight", 0.20))
+    deep_rerank_enabled = bool(getattr(settings, "ai_deep_rerank_enabled", False))
+    deep_rerank_topn = max(limit, int(getattr(settings, "ai_deep_rerank_topn", 24)))
+    deep_rerank_weight = float(getattr(settings, "ai_deep_rerank_weight", 0.45))
+    deep_rerank_timeout = max(3, int(getattr(settings, "ai_deep_rerank_timeout_seconds", 12)))
+    deep_rerank_model = str(getattr(settings, "ai_deep_rerank_model", "gte-rerank-v2") or "gte-rerank-v2")
     embedding = build_embedding_vector(q)
     picked: List[tuple[Movie, float]] = []
 
@@ -516,14 +638,66 @@ async def search_movies_for_ai_mode(
         ranked_ids.append((mid, final_score, semantic_score))
 
     ranked_ids.sort(key=lambda x: x[1], reverse=True)
-    ranked_ids = ranked_ids[:limit]
+    ranked_ids = ranked_ids[:deep_rerank_topn]
 
     if ranked_ids:
         movie_ids = [mid for mid, _, _ in ranked_ids]
         movies = (await session.execute(select(Movie).where(Movie.id.in_(movie_ids)))).scalars().all()
         movie_map = {m.id: m for m in movies}
-        for mid, _, semantic_score in ranked_ids:
+        semantic_map = {mid: semantic_score for mid, _, semantic_score in ranked_ids}
+        fused_map_score = {mid: fused_score for mid, fused_score, _ in ranked_ids}
+        ordered_ids = [mid for mid, _, _ in ranked_ids]
+
+        # 二阶段重排：RRF 后使用深度模型做相关性重排
+        if deep_rerank_enabled:
+            rerank_candidates = []
+            for mid in ordered_ids:
+                movie = movie_map.get(mid)
+                if not movie:
+                    continue
+                rerank_candidates.append({
+                    "id": mid,
+                    "title": movie.title,
+                    "year": movie.year,
+                    "director": movie.director,
+                    "stars": movie.stars,
+                    "summary": movie.summary,
+                })
+            try:
+                llm_ordered_ids, llm_score_map = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _deep_rerank_with_model,
+                        q,
+                        rerank_candidates,
+                        deep_rerank_model
+                    ),
+                    timeout=deep_rerank_timeout
+                )
+            except Exception as e:
+                logger.warning("Deep rerank 超时/异常，回退 RRF: %s", e)
+                llm_ordered_ids, llm_score_map = [], {}
+            if llm_ordered_ids:
+                base_scores = [fused_map_score[mid] for mid in ordered_ids]
+                base_norm = _minmax_normalize(base_scores)
+                base_norm_map = {mid: base_norm[idx] for idx, mid in enumerate(ordered_ids)}
+                blended: list[tuple[int, float]] = []
+                for mid in ordered_ids:
+                    llm_score = llm_score_map.get(mid, 0.0)
+                    final_blend = (1.0 - deep_rerank_weight) * base_norm_map[mid] + deep_rerank_weight * llm_score
+                    blended.append((mid, final_blend))
+                blended.sort(key=lambda x: x[1], reverse=True)
+                ordered_ids = [mid for mid, _ in blended]
+                logger.info(
+                    "🧠 Deep rerank 生效: query=%s | candidates=%d | model=%s",
+                    q,
+                    len(ordered_ids),
+                    deep_rerank_model
+                )
+
+        ordered_ids = ordered_ids[:limit]
+        for mid in ordered_ids:
             movie = movie_map.get(mid)
+            semantic_score = semantic_map.get(mid, 0.0)
             if movie and semantic_score >= threshold:
                 picked.append((movie, semantic_score))
         if picked:
@@ -771,6 +945,41 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         total_movies=count,
         timestamp=datetime.now().isoformat()
     )
+
+
+@app.get("/images/proxy", tags=["系统"])
+async def image_proxy(url: str = Query(..., min_length=8, max_length=2048)):
+    """图片代理：为受防盗链限制的图片提供后端中转。"""
+    if not _is_allowed_image_host(url):
+        raise DatabaseError(detail="仅允许代理 doubanio 图片地址")
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://movie.douban.com/",
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code >= 400:
+                raise DatabaseError(detail=f"图片拉取失败: HTTP {resp.status_code}")
+
+            content_type = resp.headers.get("content-type", "image/jpeg")
+            return StreamingResponse(
+                iter([resp.content]),
+                media_type=content_type,
+                headers={"Cache-Control": "public, max-age=86400"}
+            )
+    except DatabaseError:
+        raise
+    except Exception as e:
+        logger.warning("图片代理失败: %s", e)
+        raise DatabaseError(detail="图片代理失败")
 
 
 @app.post("/agent/chat", tags=["AI 助手"], response_model=AgentChatResponse)
@@ -1237,6 +1446,31 @@ async def list_movies(
         await cache_manager.set(cache_key, response.model_dump(), ttl=600)
     
     return response
+
+
+@app.post("/movies/rag-search", tags=["电影检索"], response_model=RagSearchResponse)
+async def movies_rag_search(
+    request: RagSearchRequest,
+    raw_request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """RAG 检索接口：仅执行 RRF + 专用 reranker，不经过 Agent。"""
+    started_at = perf_counter()
+    client_ip = raw_request.headers.get("X-Real-IP") or raw_request.client.host
+    logger.info("📍 RAG 检索请求来源: %s | 查询: %s", client_ip, request.query)
+
+    candidates = await search_movies_for_ai_mode(request.query, db)
+    items = [MovieBase.model_validate(movie) for movie, _ in candidates]
+    elapsed_ms = int((perf_counter() - started_at) * 1000)
+    logger.info("✅ RAG 检索完成: %sms | hits=%d | 查询: %s", elapsed_ms, len(items), request.query)
+
+    return RagSearchResponse(
+        status="success",
+        query=request.query,
+        total=len(items),
+        items=items,
+        timestamp=datetime.now().isoformat()
+    )
 
 
 @app.get("/movies/{movie_id}", tags=["电影检索"], response_model=MovieDetail)

@@ -255,6 +255,18 @@
         let aiStreamBuffer = '';
         let aiHasReceivedChunk = false;
 
+        function resolveCoverUrl(rawUrl) {
+            const u = (rawUrl || '').trim();
+            if (!u) return '';
+            try {
+                const parsed = new URL(u);
+                if (parsed.hostname.endsWith('doubanio.com')) {
+                    return `${API_BASE_URL}/images/proxy?url=${encodeURIComponent(u)}`;
+                }
+            } catch (_) {}
+            return u;
+        }
+
         window.onload = () => {
             syncAIToggleUI();
             // 默认渲染骨架屏，模拟高级感加载
@@ -518,7 +530,7 @@
                     
                     <div class="relative aspect-[2/3] overflow-hidden group">
                         <img 
-                            src="${movie.cover_url || ''}" 
+                            src="${resolveCoverUrl(movie.cover_url)}" 
                             class="w-full h-full object-cover transition duration-700 group-hover:scale-110"
                             onerror="this.src='https://placehold.co/400x600/e2e8f0/94a3b8?text=No+Image'"
                         >
@@ -528,7 +540,7 @@
                             </div>
                         </div>
                         <div class="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition duration-300 flex items-end p-4">
-                            <span class="text-white font-medium text-sm">查看详情 →</span>
+                            <span class="text-white font-medium text-sm">查看详情与相似推荐 →</span>
                         </div>
                     </div>
                     
@@ -663,7 +675,7 @@
                 body.innerHTML = `
                     <div class="flex flex-col md:flex-row h-full">
                         <div class="w-full md:w-2/5 h-64 md:h-auto bg-slate-200 relative">
-                            <img src="${movie.cover_url || ''}" class="w-full h-full object-cover absolute inset-0" onerror="this.parentElement.innerHTML='<div class=\\'flex items-center justify-center h-full text-slate-400\\'>暂无封面</div>'">
+                            <img src="${resolveCoverUrl(movie.cover_url)}" class="w-full h-full object-cover absolute inset-0" onerror="this.parentElement.innerHTML='<div class=\\'flex items-center justify-center h-full text-slate-400\\'>暂无封面</div>'">
                             <div class="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent md:hidden"></div>
                         </div>
                         <div class="flex-1 p-8 bg-white overflow-y-auto">
@@ -700,12 +712,75 @@
                                         暂无来源链接
                                     </div>
                                 `}
+
+                                <div class="border-t pt-6">
+                                    <h3 class="text-lg font-bold text-slate-900 mb-3">相似推荐</h3>
+                                    <div id="relatedMovies" class="grid grid-cols-2 md:grid-cols-3 gap-3"></div>
+                                </div>
                             </div>
                         </div>
                     </div>
                 `;
+
+                renderRelatedLoading();
+                await loadRelatedMovies(movie);
             } catch (e) {
                 body.innerHTML = `<div class="p-8 text-center text-red-500">加载失败</div>`;
+            }
+        }
+
+        function renderRelatedLoading() {
+            const box = document.getElementById('relatedMovies');
+            if (!box) return;
+            box.innerHTML = Array.from({ length: 6 }).map(() => `
+                <div class="rounded-xl border border-slate-200 overflow-hidden bg-slate-50">
+                    <div class="h-24 skeleton"></div>
+                    <div class="p-2 space-y-2">
+                        <div class="h-3 skeleton"></div>
+                        <div class="h-3 w-2/3 skeleton"></div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function loadRelatedMovies(movie) {
+            const title = (movie?.title || '').trim();
+            const box = document.getElementById('relatedMovies');
+            if (!box || !title) return;
+
+            const query = `给我推荐和"${title}"相似的电影`;
+            try {
+                const response = await fetch(`${API_BASE_URL}/movies/rag-search`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query })
+                });
+                const data = await safeReadJson(response);
+                if (!response.ok || !data) {
+                    const detail = await readErrorDetail(response, '相似推荐加载失败');
+                    throw new Error(detail);
+                }
+
+                const items = (data.items || []).filter((x) => x.id !== movie.id).slice(0, 6);
+                if (!items.length) {
+                    box.innerHTML = `<div class="text-sm text-slate-500 col-span-full">暂无相似推荐</div>`;
+                    return;
+                }
+
+                box.innerHTML = items.map((item) => `
+                    <div class="rounded-xl border border-slate-200 overflow-hidden bg-white hover:shadow-md transition cursor-pointer"
+                         onclick="showMovieDetail(${item.id})">
+                        <div class="h-24 bg-slate-100">
+                            <img src="${resolveCoverUrl(item.cover_url)}" class="w-full h-full object-cover" onerror="this.style.display='none'">
+                        </div>
+                        <div class="p-2">
+                            <p class="text-sm font-semibold text-slate-800 line-clamp-2">${item.title || ''}</p>
+                            <p class="text-xs text-slate-500 mt-1">${item.year || '未知年份'} ${item.rating ? `· ⭐ ${item.rating}` : ''}</p>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                box.innerHTML = `<div class="text-sm text-red-500 col-span-full">${error?.message || '相似推荐加载失败'}</div>`;
             }
         }
 

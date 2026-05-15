@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     ai_hnsw_candidate_pool: int = 80
     ai_rrf_k: int = 60
     ai_rrf_weight: float = 0.20
+    ai_deep_rerank_enabled: bool = False
+    ai_deep_rerank_topn: int = 24
+    ai_deep_rerank_weight: float = 0.45
+    ai_deep_rerank_timeout_seconds: int = 12
+    ai_deep_rerank_model: str = "gte-rerank-v2"
     search_typo_similarity_threshold: float = 0.16
     search_vector_similarity_threshold: float = 0.45
     
