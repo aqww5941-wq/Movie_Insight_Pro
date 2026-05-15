@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     
     # 数据库配置
     pg_user: str = "root"
-    pg_password: str = "000000"
+    pg_password: str = ""
     pg_host: str = "db"
     pg_port: int = 5432
     pg_dbname: str = "movie_db"

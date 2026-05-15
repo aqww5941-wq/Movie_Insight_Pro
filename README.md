@@ -52,8 +52,8 @@
 项目依赖根目录 `.env`。至少需要下面这些变量：
 
 ```bash
-PG_USER=root
-PG_PASSWORD=000000
+PG_USER=your_user
+PG_PASSWORD=your_password
 PG_DBNAME=movie_db
 RABBITMQ_USERNAME=guest
 RABBITMQ_PASSWORD=guest

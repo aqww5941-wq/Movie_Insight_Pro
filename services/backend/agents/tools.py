@@ -13,7 +13,7 @@ DB_CONFIG = {
     "host": os.getenv("PG_HOST", "db"), # 对应 docker-compose 中的服务名
     "port": int(os.getenv("PG_PORT", 5432)),
     "user": os.getenv("PG_USER", "root"),
-    "password": os.getenv("PG_PASSWORD", "000000"),
+    "password": os.getenv("PG_PASSWORD"),
     "dbname": os.getenv("PG_DBNAME", "movie_db")
 }
 
