@@ -17,3 +17,4 @@ services/collector/.scrapy/
 .DS_Store
 .claude
 .codex
+.vscode
