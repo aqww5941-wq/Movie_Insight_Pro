@@ -18,3 +18,4 @@ services/collector/.scrapy/
 .claude
 .codex
 .vscode
+.idea/
