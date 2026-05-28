@@ -111,6 +111,7 @@ services:
       - RABBITMQ_USERNAME=${RABBITMQ_USERNAME:-guest}
       - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-guest}
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY}
     volumes:
       - ./services/collector:/app
       - ./data:/app/data
@@ -124,11 +125,12 @@ services:
           memory: 1G
 
   backend:
-    build: 
+    build:
       context: ./services/backend
       dockerfile: Dockerfile
     container_name: movie-api
     restart: unless-stopped
+    env_file: .env
     expose:
       - "8000"
     environment:
@@ -140,6 +142,7 @@ services:
       - PG_PASSWORD=${PG_PASSWORD}
       - PG_DBNAME=${PG_DBNAME}
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
+      - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     volumes:
@@ -188,7 +191,7 @@ services:
         limits:
           cpus: '0.5'
           memory: 256M
-    
+
   redis:
     image: redis:7.2-alpine  # 指定版本
     container_name: movie-redis
@@ -217,4 +220,3 @@ networks:
     ipam:
       config:
         - subnet: 172.25.0.0/16
-

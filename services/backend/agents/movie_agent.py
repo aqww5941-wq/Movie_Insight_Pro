@@ -87,7 +87,7 @@ class MovieAgent:
     def __init__(self):
         api_key = (os.getenv("DASHSCOPE_API_KEY") or "").strip()
         base_url = (os.getenv("DASHSCOPE_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1").strip()
-        model = (os.getenv("QWEN_MODEL") or "qwen3.5-397b-a17b").strip()
+        model = (os.getenv("QWEN_MODEL") or "qwen3.7-max").strip()
 
         self.llm = ChatOpenAI(
             model=model,

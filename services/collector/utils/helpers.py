@@ -92,49 +92,95 @@ class DataCleaner:
             print(f"邮件发送失败: {e}")
             return False
 
+
 class AIAgent:
+    @staticmethod
+    def _get_client():
+        """
+        [内部方法] 初始化并返回硅基流动的 OpenAI 客户端
+        """
+        from openai import OpenAI
+        api_key = os.getenv('SILICONFLOW_API_KEY')
+        if not api_key:
+            print("❌ 错误：未配置 SILICONFLOW_API_KEY 环境变量！")
+            return None
+
+        # 硅基流动的统一标准 API 入口
+        return OpenAI(
+            api_key=api_key,
+            base_url="https://api.siliconflow.cn/v1"
+        )
+
     @staticmethod
     def generate_embedding(text):
         """
-        [新增] 将电影简介转换为 1536 维向量
-        用于 PostgreSQL 的语义检索
+        [已修改] 调用硅基流动接口将电影简介转换为向量
+        使用推荐模型: BAAI/bge-m3 (1024维) 或 text-embedding-ada-002 兼容模型
+        🚨 注意：如果你的 pgvector 数据库之前锁死了 1536 维，请使用 text-embedding-ada-002
         """
-        import dashscope
-        api_key = os.getenv('DASHSCOPE_API_KEY')
-        if not api_key or not text:
+        if not text or not text.strip():
             return None
 
-        # 注意：这里调用的是 TextEmbedding 接口，不是之前的 Generation 接口
-        resp = dashscope.TextEmbedding.call(
-            model=dashscope.TextEmbedding.Models.text_embedding_v2,
-            input=text[:1500],  # 截取前1500字，防止超过 API 限制
-            api_key=api_key
-        )
-
-        if resp.status_code == HTTPStatus.OK:
-            # 返回的是一个浮点数列表 [0.12, -0.05, ...]
-            return resp.output['embeddings'][0]['embedding']
-        else:
-            print(f"❌ Embedding 失败: {resp.message}")
+        client = AIAgent._get_client()
+        if not client:
             return None
+
+        try:
+            # 硅基流动支持多种 Embedding 模型：
+            # 1. "BAAI/bge-m3" (1024维，文本检索效果极佳，极度推荐)
+            # 2. "BAAI/bge-large-zh-v1.5" (1024维)
+            # 🚨 如果你的 pgvector 字段定义的是 vector(1536)，请联系我改数据库，或者确认他们是否支持 1536 维模型
+            model_name = "Qwen/Qwen3-Embedding-4B"
+
+            response = client.embeddings.create(
+                model=model_name,
+                input=text[:2000]  # 适当截取，防止单次 Token 超限
+            )
+            raw_embedding = response.data[0].embedding
+            if len(raw_embedding) > 1536:
+                return raw_embedding[:1536]
+
+            # 从 OpenAI 标准响应结构中提取向量数组
+            return raw_embedding
+
+        except Exception as e:
+            print(f"❌ 硅基流动 Embedding 失败: {e}")
+            return None
+
     @staticmethod
     def analyze_movie_plot(plot_text):
         """
-        调用 Qwen API 对电影剧情进行分析
+        [已修改] 调用硅基流动 API 对电影剧情进行分析
+        使用性价比与速度极佳的: Qwen/Qwen2.5-7B-Instruct
+        或者顶配全能大模型: Qwen/Qwen2.5-72B-Instruct
         """
-        import dashscope
-        api_key = os.getenv('DASHSCOPE_API_KEY')
-        if not api_key:
+        if not plot_text or not plot_text.strip():
+            return "剧情简介为空，无法分析"
+
+        client = AIAgent._get_client()
+        if not client:
             return "未配置 API KEY"
 
-        # 调用通义千问模型 (以 qwen-plus 为例)
-        response = dashscope.Generation.call(
-            model='qwen-plus',
-            prompt=f"请简要总结以下电影剧情的三个核心标签，用逗号隔开：{plot_text}",
-            api_key=api_key
-        )
+        # 推荐使用硅基流动平台上性价比爆炸的 Qwen2.5 系列
+        # 追求速度用: "Qwen/Qwen2.5-7B-Instruct"
+        # 追求质量用: "Qwen/Qwen2.5-72B-Instruct"
+        model_name = "Qwen/Qwen2.5-7B-Instruct"
 
-        if response.status_code == HTTPStatus.OK:
-            return response.output.text
-        else:
-            return f"Error: {response.message}"
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"请简要总结以下电影剧情的三个核心标签，用英文逗号隔开，不要包含任何其他废话：\n\n{plot_text}"
+                    }
+                ],
+                temperature=0.3,  # 降低随机性，让标签更精准
+                max_tokens=50
+            )
+
+            # 解析标准的 Chat 结构返回
+            return response.choices[0].message.content.strip()
+
+        except Exception as e:
+            return f"Error: 硅基流动大模型请求失败: {e}"
