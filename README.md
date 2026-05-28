@@ -47,89 +47,56 @@
 
 ## 快速开始
 
-### 1) 配置环境变量
-
-项目依赖根目录 `.env`。至少需要下面这些变量：
-
-```bash
-PG_USER=your_user
-PG_PASSWORD=your_password
+## 1.  `.env` 配置如下：
+```env
+# 数据库配置
+PG_PASSWORD=password
 PG_DBNAME=movie_db
-RABBITMQ_USERNAME=guest
-RABBITMQ_PASSWORD=guest
-DASHSCOPE_API_KEY=your_api_key
+PG_USER=root
+
+# 邮件配置
+EMAIL_SENDER=your_qq_email@qq.com
+EMAIL_PASSWORD=your_qq_smtp_auth_code   # 填写 QQ 邮箱生成的 SMTP 授权码
+EMAIL_RECEIVER=your_receiver_email@qq.com
+
+# 代理配置
+PROXY_PORT=7897(用于 Scrapy/Playwright 科学上网)
+
+#千问api
+DASHSCOPE_API_KEY=xxxxxxxxx
+# 硅基流动api
+SILICONFLOW_API_KEY=xxxxxxxxxx
+REDIS_HOST=redis
+# AI 深度重排配置
+AI_DEEP_RERANK_ENABLED=true
+AI_DEEP_RERANK_TOPN=24
+AI_DEEP_RERANK_WEIGHT=0.45
+AI_DEEP_RERANK_TIMEOUT_SECONDS=12
+AI_DEEP_RERANK_MODEL=gte-rerank-v2
 ```
-
-> `manage.sh` 会检查 `.env` 是否存在。
-
-### 2) 启动服务
-
+---
+## 2. alembic同步数据表结构、字段
 ```bash
-chmod +x manage.sh
-./manage.sh start
+# 进入alembic.init同一目录，执行 Alembic 升级命令，将数据库同步到最新版本
+alembic upgrade head
 ```
-
-启动后默认端口：
-- `http://localhost`：Nginx 入口
-- `http://localhost/api/docs`：Swagger 文档
-- `http://localhost:15672`：RabbitMQ 管理台
-
-### 3) 查看状态与日志
-
+或  进入容器直接操作
 ```bash
-./manage.sh status
-./manage.sh logs backend
-./manage.sh logs consumer
+docker exec -it movie-api alembic upgrade head
 ```
-
-### 4) 健康检查
-
+---
+## 3. 容器collector运行爬取数据
 ```bash
-./manage.sh health
-```
+# 下载 Chromium 浏览器及依赖
+docker exec -it collector bash -c "pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple && playwright install chromium --with-deps"
 
-## 常用管理命令
-
-```bash
-./manage.sh start                  # 启动
-./manage.sh stop                   # 停止
-./manage.sh restart                # 重启
-./manage.sh status                 # 服务状态
-./manage.sh logs [service]         # 查看日志
-./manage.sh enter backend          # 进入容器
-./manage.sh backup                 # 备份 PostgreSQL
-./manage.sh restore backups/xxx.gz # 恢复 PostgreSQL
-```
-
-## 数据采集
-
-采集服务在 `collector` 容器中运行。你可以进入容器手动触发爬虫任务，例如：
-
-```bash
-./manage.sh enter collector
-scrapy list
-scrapy crawl douban_movie
+# 爬取数据
+scrapy crawl douban
 scrapy crawl imdb
 scrapy crawl tomatoes
+
 ```
-
-采集数据会先进入 RabbitMQ，再由 `consumer` 服务清洗与入库。
-
-## 核心 API
-
-后端主要接口（由 Nginx 统一挂在 `/api` 下）：
-
-- `GET /api/health`：系统健康状态
-- `GET /api/movies`：电影检索/分页查询
-- `GET /api/movies/{movie_id}`：电影详情
-- `POST /api/movies/rag-search`：RAG 检索
-- `POST /api/agent/chat`：AI 对话（非流式）
-- `POST /api/agent/chat/stream`：AI 对话（SSE 流式）
-- `GET /api/stats/platforms`：数据来源统计
-- `GET /api/surprise-me`：随机推荐
-
-在线调试：`http://localhost/api/docs`
-
+> 爬取的数据会自动进入队列，向量化，入库
 ## 运行机制（简版）
 
 1. 爬虫抓取电影基础信息。
@@ -137,13 +104,6 @@ scrapy crawl tomatoes
 3. 消费端做字段清洗、生成 embedding、写入 PostgreSQL（Upsert）。
 4. FastAPI 提供检索与 AI 推荐接口。
 5. Nginx 对外提供统一入口并处理 SSE 长连接。
-
-## 故障排查
-
-- `api/docs` 打不开：先执行 `./manage.sh status`，确认 `backend` 与 `nginx` 已启动。
-- AI 无响应或超时：检查 `DASHSCOPE_API_KEY` 是否正确，以及配额/网络状态。
-- 无数据可查：确认爬虫已执行，且 `consumer` 日志无持续报错。
-- PostgreSQL 异常：检查 `db/init_sql/init.sql` 是否成功启用了 `vector` 扩展。
 
 ## 开源说明
 
