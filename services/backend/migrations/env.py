@@ -6,7 +6,7 @@ from sqlalchemy import pool
 from alembic import context
 import os
 from dotenv import load_dotenv # 🚀 引入 dotenv
-from models import Base
+from db.models import Base
 
 load_dotenv(os.path.join(os.getcwd(), '.env'))
 

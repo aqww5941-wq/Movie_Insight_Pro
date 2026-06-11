@@ -18,8 +18,8 @@ BACKEND_DIR = os.path.dirname(CURRENT_DIR)
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-from database import AsyncSessionLocal  # noqa: E402
-from main import search_movies_for_ai_mode  # noqa: E402
+from db.database import AsyncSessionLocal  # noqa: E402
+from services.search import search_movies_for_ai_mode  # noqa: E402
 
 
 def normalize_title(title: str) -> str:

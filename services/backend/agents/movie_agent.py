@@ -1,12 +1,15 @@
+import asyncio
 import logging
 import os
-from typing import Any, TypedDict
+from typing import Any, AsyncGenerator, TypedDict
 
 from dotenv import load_dotenv
 from langchain.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import create_react_agent
+
+from utils.helpers import is_noise_message, extract_root_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -43,31 +46,6 @@ class AgentWorkflowState(TypedDict, total=False):
     error: str
 
 
-def _is_noise_message(text: str) -> bool:
-    normalized = text.strip().strip('"\'').lower()
-    if normalized == "request":
-        return True
-    if normalized.startswith("keyerror") and "request" in normalized:
-        return True
-    return False
-
-
-def _extract_root_error_message(exc: Exception) -> str:
-    messages = []
-    current = exc
-    visited = set()
-
-    while current and id(current) not in visited:
-        visited.add(id(current))
-        text = str(current).strip()
-        if text and not _is_noise_message(text):
-            messages.append(text)
-        current = current.__cause__ or current.__context__
-
-    if messages:
-        return messages[-1]
-    return "AI 上游服务调用失败（可能是网络、密钥或配额问题）"
-
 
 class MovieAgent:
     _SYSTEM_INSTRUCTION = (
@@ -87,13 +65,14 @@ class MovieAgent:
     def __init__(self):
         api_key = (os.getenv("DASHSCOPE_API_KEY") or "").strip()
         base_url = (os.getenv("DASHSCOPE_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1").strip()
-        model = (os.getenv("QWEN_MODEL") or "qwen3.7-max").strip()
+        model = (os.getenv("QWEN_MODEL") or "qwen3.7-plus").strip()
 
         self.llm = ChatOpenAI(
             model=model,
             temperature=0,
             api_key=api_key,
             base_url=base_url,
+            streaming=True,
         )
         logger.info("MovieAgent LLM 初始化: model=%s, base_url=%s", model, base_url)
 
@@ -444,11 +423,175 @@ class MovieAgent:
                 return "暂时没有拿到可用结果，请稍后再试。"
             return answer
         except Exception as exc:
-            root_message = _extract_root_error_message(exc)
-            if _is_noise_message(root_message):
+            root_message = extract_root_error_message(exc)
+            if is_noise_message(root_message):
                 root_message = "AI 上游服务调用失败（可能是网络、密钥或配额问题）"
             logger.error("MovieAgent 调用失败: %s", root_message, exc_info=True)
             raise MovieAgentError(root_message) from exc
+
+    async def astream(self, query: str) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Async generator for true token-level streaming via LangGraph astream_events.
+        Yields: {"type": "token"/"tool_start"/"tool_end"/"phase"/"done"/"error", ...}
+        """
+        user_query = (query or "").strip()
+        if not user_query:
+            yield {"type": "done", "answer": "请告诉我你想查询的电影问题。", "intents": []}
+            return
+
+        self._tool_result_cache.clear()
+
+        specs = select_skills(user_query)
+        intents: list[str] = []
+        for spec in specs:
+            if spec.name not in intents:
+                intents.append(spec.name)
+        if not intents:
+            intents = ["general"]
+
+        logger.info("MovieAgent astream intents=%s", intents)
+
+        try:
+            if len(intents) == 1:
+                async for event in self._astream_single_intent(user_query, intents[0]):
+                    yield event
+            else:
+                async for event in self._astream_multi_intent(user_query, intents):
+                    yield event
+        except Exception as exc:
+            root_message = extract_root_error_message(exc)
+            if is_noise_message(root_message):
+                root_message = "AI 上游服务调用失败（可能是网络、密钥或配额问题）"
+            logger.error("MovieAgent astream 失败: %s", root_message, exc_info=True)
+            yield {"type": "error", "message": root_message}
+
+    async def _astream_single_intent(
+        self, query: str, skill_name: str
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        skill = SKILL_SPECS.get(skill_name, SKILL_SPECS["general"])
+        intent_query = self._build_intent_query({"query": query}, skill_name)
+        system_instruction = self._SYSTEM_INSTRUCTION + "\n" + skill.instruction
+
+        agent = self.skill_agents.get(skill_name, self.skill_agents["general"])
+        full_response = ""
+
+        async for event in agent.astream_events(
+            {"messages": [("system", system_instruction), ("user", intent_query)]},
+            config={"recursion_limit": 8},
+            version="v2",
+        ):
+            kind = event.get("event")
+            if kind == "on_chat_model_stream":
+                chunk = event.get("data", {}).get("chunk")
+                if chunk is not None:
+                    token = self._chunk_to_text(getattr(chunk, "content", ""))
+                    if token:
+                        full_response += token
+                        yield {"type": "token", "content": token}
+            elif kind == "on_tool_start":
+                name = event.get("name", "")
+                if name:
+                    yield {"type": "tool_start", "tool_name": name}
+            elif kind == "on_tool_end":
+                name = event.get("name", "")
+                if name:
+                    yield {"type": "tool_end", "tool_name": name}
+
+        answer = full_response.strip()
+        if not answer:
+            answer = "暂时没有拿到可用结果，请稍后再试。"
+        yield {"type": "done", "answer": answer, "intents": [skill_name]}
+
+    async def _astream_multi_intent(
+        self, query: str, intents: list[str]
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        intent_results: list[dict[str, str]] = []
+
+        for i, skill_name in enumerate(intents):
+            is_last = (i == len(intents) - 1)
+            skill = SKILL_SPECS.get(skill_name, SKILL_SPECS["general"])
+            intent_query = self._build_intent_query(
+                {"query": query, "intent_results": intent_results}, skill_name
+            )
+            system_instruction = self._SYSTEM_INSTRUCTION + "\n" + skill.instruction
+            agent = self.skill_agents.get(skill_name, self.skill_agents["general"])
+
+            yield {"type": "phase", "intent": skill_name}
+
+            if is_last:
+                last_answer = ""
+                async for event in agent.astream_events(
+                    {"messages": [("system", system_instruction), ("user", intent_query)]},
+                    config={"recursion_limit": 8},
+                    version="v2",
+                ):
+                    kind = event.get("event")
+                    if kind == "on_chat_model_stream":
+                        chunk = event.get("data", {}).get("chunk")
+                        if chunk is not None:
+                            token = self._chunk_to_text(getattr(chunk, "content", ""))
+                            if token:
+                                last_answer += token
+                                yield {"type": "token", "content": token}
+                    elif kind == "on_tool_start":
+                        name = event.get("name", "")
+                        if name:
+                            yield {"type": "tool_start", "tool_name": name}
+                    elif kind == "on_tool_end":
+                        name = event.get("name", "")
+                        if name:
+                            yield {"type": "tool_end", "tool_name": name}
+
+                intent_results.append({"intent": skill_name, "answer": last_answer.strip()})
+            else:
+                result = await asyncio.to_thread(
+                    agent.invoke,
+                    {"messages": [("system", system_instruction), ("user", intent_query)]},
+                    {"recursion_limit": 8},
+                )
+                messages = result.get("messages") or []
+                if messages:
+                    answer = self._chunk_to_text(getattr(messages[-1], "content", "")).strip()
+                    intent_results.append({"intent": skill_name, "answer": answer})
+                else:
+                    intent_results.append({"intent": skill_name, "answer": ""})
+
+        if len(intent_results) == 1:
+            final = intent_results[0]["answer"]
+            yield {"type": "done", "answer": final.strip(), "intents": intents}
+        else:
+            final = ""
+            async for token in self._astream_compose_final(query, intent_results):
+                final += token
+                yield {"type": "token", "content": token}
+            yield {"type": "done", "answer": final.strip(), "intents": intents}
+
+    async def _astream_compose_final(
+        self, query: str, intent_results: list[dict[str, str]]
+    ) -> AsyncGenerator[str, None]:
+        material = "\n\n".join(
+            f"[{idx + 1}] {item['intent']}:\n{item['answer']}"
+            for idx, item in enumerate(intent_results)
+        )
+        prompt = (
+            "你是电影助手。请把多阶段子任务结果整合为一个中文最终答复。\n"
+            "要求：\n"
+            "1) 先给结论，再给依据\n"
+            "2) 保留关键数据与对比结论\n"
+            "3) 不编造，必须基于给定材料\n\n"
+            f"用户问题：{query}\n\n"
+            f"子任务结果：\n{material}"
+        )
+        try:
+            async for chunk in self.llm.astream([("user", prompt)]):
+                token = self._chunk_to_text(getattr(chunk, "content", ""))
+                if token:
+                    yield token
+        except Exception as e:
+            logger.warning("Final answer compose stream failed: %s", e)
+            merged = self._compose_final_answer(query, intent_results)
+            if merged:
+                yield merged
 
 
 if __name__ == "__main__":

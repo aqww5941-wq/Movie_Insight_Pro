@@ -1,17 +1,11 @@
 import logging
-import os
 import re
-import sys
 from dataclasses import dataclass
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-try:
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from utils.helpers import AIAgent
-except ImportError:
-    AIAgent = None
+from utils.helpers import AIAgent  # noqa: E402
 
 EMBEDDING_DIRECT_THRESHOLD = 0.70
 EMBEDDING_LLM_THRESHOLD = 0.60
