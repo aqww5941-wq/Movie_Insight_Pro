@@ -19,3 +19,4 @@ services/collector/.scrapy/
 .codex
 .vscode
 .idea/
+.venv/

@@ -578,6 +578,7 @@
                         </div>
                     </div>
                     <div class="prose prose-indigo max-w-none text-slate-700 leading-relaxed whitespace-pre-wrap" id="aiTextOutput"></div>
+                    <div id="aiToolStatus" class="mt-3 text-xs text-slate-400 hidden"></div>
                 </div>
             `;
         }
@@ -607,6 +608,18 @@
                 appendAIChunk(payload.delta || '');
                 return 'chunk';
             }
+            if (eventName === 'tool_start') {
+                showToolStatus(payload.tool_name);
+                return 'tool_start';
+            }
+            if (eventName === 'tool_end') {
+                showToolStatus(null);
+                return 'tool_end';
+            }
+            if (eventName === 'phase') {
+                showToolStatus(payload.intent);
+                return 'phase';
+            }
             if (eventName === 'done') {
                 finishAIResult(payload);
                 return 'done';
@@ -616,6 +629,25 @@
                 return 'server_error';
             }
             return eventName;
+        }
+
+        const TOOL_NAME_MAP = {
+            'query_movie_db': '正在查询电影数据库...',
+            'semantic_movie_search': '正在进行语义检索...',
+            'get_movie_table_schema': '正在获取数据库结构...',
+        };
+
+        function showToolStatus(toolOrPhase) {
+            const el = document.getElementById('aiToolStatus');
+            if (!el) return;
+            if (!toolOrPhase) {
+                el.classList.add('hidden');
+                el.textContent = '';
+                return;
+            }
+            const label = TOOL_NAME_MAP[toolOrPhase] || `正在执行: ${toolOrPhase}`;
+            el.textContent = '🔍 ' + label;
+            el.classList.remove('hidden');
         }
 
         function appendAIChunk(delta) {
@@ -630,6 +662,8 @@
             const finalText = data.agent_answer || aiStreamBuffer;
             const output = document.getElementById('aiTextOutput');
             if (output) output.textContent = finalText;
+
+            showToolStatus(null);
 
             if (data.movie_titles && data.movie_titles.length > 0) {
                 renderMovies(data.movie_titles, data.movie_titles.length);
@@ -751,7 +785,7 @@
 
             const query = `给我推荐和"${title}"相似的电影`;
             try {
-                const response = await fetch(`${API_BASE_URL}/movies/rag-search`, {
+                const response = await fetch(`${API_BASE_URL}/movies/similar`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ query })
